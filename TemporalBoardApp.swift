@@ -37,15 +37,20 @@ class BoardViewModel: ObservableObject {
     
     func updateTimers(_ newTimers: [BoardTimer]) {
         self.timers = newTimers
-        saveData()
+        saveTimers()
     }
     
     func saveData() {
-        // 1. Drawing speichern
+        saveDrawing()
+        saveTimers()
+    }
+    
+    func saveDrawing() {
         let data = canvasView.drawing.dataRepresentation()
         try? data.write(to: drawingURL)
-        
-        // 2. Timer speichern
+    }
+    
+    func saveTimers() {
         if let encoded = try? JSONEncoder().encode(timers) {
             try? encoded.write(to: timersURL)
         }
@@ -68,13 +73,15 @@ class BoardViewModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
         ZStack {
             CanvasView(
                 canvasView: $viewModel.canvasView,
                 timers: $viewModel.timers,
-                onUpdateTimers: viewModel.updateTimers
+                onUpdateTimers: viewModel.updateTimers,
+                onSaveDrawing: viewModel.saveDrawing
             )
             .edgesIgnoringSafeArea(.all)
             
@@ -94,5 +101,10 @@ struct ContentView: View {
         }
         // Wichtig: Wenn die App in den Hintergrund geht, speichern
         .onChange(of: viewModel.timers.count) { _ in viewModel.saveData() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                viewModel.saveData()
+            }
+        }
     }
 }

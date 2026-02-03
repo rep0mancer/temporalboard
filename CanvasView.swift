@@ -6,6 +6,7 @@ struct CanvasView: UIViewRepresentable {
     @Binding var canvasView: PKCanvasView
     @Binding var timers: [BoardTimer]
     let onUpdateTimers: ([BoardTimer]) -> Void
+    let onSaveDrawing: () -> Void
     
     func makeUIView(context: Context) -> PKCanvasView {
         canvasView.tool = PKInkingTool(.pen, color: .black, width: 10)
@@ -36,9 +37,11 @@ struct CanvasView: UIViewRepresentable {
         Coordinator(self)
     }
     
-    class Coordinator: NSObject, PKCanvasViewDelegate {
+    class Coordinator: NSObject, PKCanvasViewDelegate, UIScrollViewDelegate {
         var parent: CanvasView
         var recognitionWorkItem: DispatchWorkItem?
+        var saveWorkItem: DispatchWorkItem?
+        var recognitionToken: UUID?
         var timeParser = TimeParser()
         
         // Cache für die Timer-Views (UIView), damit wir sie nicht ständig neu erstellen
@@ -58,8 +61,13 @@ struct CanvasView: UIViewRepresentable {
             recognitionWorkItem = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
             
-            // Speichern triggern (einfachheitshalber hier, idealerweise auch debounced)
-            // In einer echten App würde man das separat vom Recognition-Debounce machen.
+            // Speichern separat debounced
+            saveWorkItem?.cancel()
+            let saveItem = DispatchWorkItem { [weak self] in
+                self?.parent.onSaveDrawing()
+            }
+            saveWorkItem = saveItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: saveItem)
         }
         
         func performRecognition(on canvasView: PKCanvasView) {
@@ -74,20 +82,29 @@ struct CanvasView: UIViewRepresentable {
             let image = drawing.image(from: bounds, scale: 1.0)
             guard let cgImage = image.cgImage else { return }
             
-            let request = VNRecognizeTextRequest { [weak self] request, error in
-                guard let self = self, let observations = request.results as? [VNRecognizedTextObservation] else { return }
+            let token = UUID()
+            recognitionToken = token
+            
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else { return }
                 
-                DispatchQueue.main.async {
-                    self.processObservations(observations, in: bounds, canvasView: canvasView)
+                let request = VNRecognizeTextRequest { [weak self] request, error in
+                    guard let self = self,
+                          let observations = request.results as? [VNRecognizedTextObservation],
+                          self.recognitionToken == token else { return }
+                    
+                    DispatchQueue.main.async {
+                        self.processObservations(observations, in: bounds, canvasView: canvasView)
+                    }
                 }
+                
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+                request.recognitionLanguages = ["de-DE", "en-US"] // Deutsch priorisieren
+                
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                try? handler.perform([request])
             }
-            
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["de-DE", "en-US"] // Deutsch priorisieren
-            
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            try? handler.perform([request])
         }
         
         func processObservations(_ observations: [VNRecognizedTextObservation], in drawingBounds: CGRect, canvasView: PKCanvasView) {
@@ -96,6 +113,7 @@ struct CanvasView: UIViewRepresentable {
             for observation in observations {
                 guard let candidate = observation.topCandidates(1).first else { continue }
                 let text = candidate.string
+                let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 
                 // Prüfen, ob es eine Zeit ist
                 if let targetDate = timeParser.parse(text: text) {
@@ -118,7 +136,10 @@ struct CanvasView: UIViewRepresentable {
                     let alreadyExists = parent.timers.contains { existing in
                         let dx = existing.anchorX - centerX
                         let dy = existing.anchorY - centerY
-                        return (dx*dx + dy*dy) < 2500 // 50^2
+                        let distanceMatch = (dx*dx + dy*dy) < 2500 // 50^2
+                        let textMatch = normalizedText == existing.originalText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        let timeMatch = abs(existing.targetDate.timeIntervalSince(targetDate)) < 60
+                        return distanceMatch && (textMatch || timeMatch)
                     }
                     
                     if !alreadyExists {
@@ -174,7 +195,9 @@ struct CanvasView: UIViewRepresentable {
                 
                 // Position setzen
                 label.frame.size = CGSize(width: 80, height: 24)
-                label.center = CGPoint(x: timer.anchorX, y: timer.anchorY + 30) // Etwas unter den Text schieben
+                let contentPoint = CGPoint(x: timer.anchorX, y: timer.anchorY + 30) // Etwas unter den Text schieben
+                let viewPoint = convertContentPoint(contentPoint, in: canvasView)
+                label.center = viewPoint
                 
                 // Text berechnen
                 let now = Date()
@@ -197,6 +220,25 @@ struct CanvasView: UIViewRepresentable {
                     }
                 }
             }
+        }
+        
+        private func convertContentPoint(_ point: CGPoint, in canvasView: PKCanvasView) -> CGPoint {
+            let zoomScale = canvasView.zoomScale
+            let offset = canvasView.contentOffset
+            return CGPoint(
+                x: (point.x - offset.x) * zoomScale,
+                y: (point.y - offset.y) * zoomScale
+            )
+        }
+        
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            guard let canvasView = scrollView as? PKCanvasView else { return }
+            updateTimerViews(in: canvasView, with: parent.timers)
+        }
+        
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            guard let canvasView = scrollView as? PKCanvasView else { return }
+            updateTimerViews(in: canvasView, with: parent.timers)
         }
     }
 }
