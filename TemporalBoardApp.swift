@@ -10,34 +10,40 @@ struct TemporalBoardApp: App {
     }
 }
 
+// MARK: - BoardViewModel (MVVM-compliant: Data only, no UIKit views)
+
 class BoardViewModel: ObservableObject {
-    @Published var canvasView = PKCanvasView()
+    // Data only - no UIKit views
+    @Published var drawing: PKDrawing = PKDrawing()
     @Published var timers: [BoardTimer] = []
     
-    private var timer: Timer?
     private let drawingURL: URL
     private let timersURL: URL
     
     init() {
-        // Pfade für Speicher
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         drawingURL = docs.appendingPathComponent("drawing.data")
         timersURL = docs.appendingPathComponent("timers.json")
         
         loadData()
-        startClock()
-    }
-    
-    func startClock() {
-        // Jede Sekunde UI aktualisieren
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.objectWillChange.send() // Trigger UI Update
-        }
     }
     
     func updateTimers(_ newTimers: [BoardTimer]) {
         self.timers = newTimers
         saveTimers()
+    }
+    
+    func addTimers(_ newTimers: [BoardTimer]) {
+        timers.append(contentsOf: newTimers)
+        saveTimers()
+    }
+    
+    func updateDrawing(_ newDrawing: PKDrawing) {
+        // Only update if actually changed to avoid unnecessary redraws
+        if drawing.dataRepresentation() != newDrawing.dataRepresentation() {
+            drawing = newDrawing
+            saveDrawing()
+        }
     }
     
     func saveData() {
@@ -46,7 +52,7 @@ class BoardViewModel: ObservableObject {
     }
     
     func saveDrawing() {
-        let data = canvasView.drawing.dataRepresentation()
+        let data = drawing.dataRepresentation()
         try? data.write(to: drawingURL)
     }
     
@@ -57,19 +63,21 @@ class BoardViewModel: ObservableObject {
     }
     
     func loadData() {
-        // Drawing laden
+        // Load drawing
         if let data = try? Data(contentsOf: drawingURL),
-           let drawing = try? PKDrawing(data: data) {
-            canvasView.drawing = drawing
+           let savedDrawing = try? PKDrawing(data: data) {
+            drawing = savedDrawing
         }
         
-        // Timer laden
+        // Load timers
         if let data = try? Data(contentsOf: timersURL),
            let savedTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
             timers = savedTimers
         }
     }
 }
+
+// MARK: - ContentView
 
 struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
@@ -78,17 +86,16 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             CanvasView(
-                canvasView: $viewModel.canvasView,
+                drawing: $viewModel.drawing,
                 timers: $viewModel.timers,
-                onUpdateTimers: viewModel.updateTimers,
-                onSaveDrawing: viewModel.saveDrawing
+                onAddTimers: viewModel.addTimers
             )
             .edgesIgnoringSafeArea(.all)
             
-            // Debug / Info Overlay (Optional, da v0 minimal sein soll, lassen wir es fast leer)
+            // Debug / Info Overlay
             VStack {
                 HStack {
-                    Text("TemporalBoard v0")
+                    Text("TemporalBoard Beta")
                         .font(.caption)
                         .padding(8)
                         .background(.thinMaterial)
@@ -99,7 +106,6 @@ struct ContentView: View {
                 Spacer()
             }
         }
-        // Wichtig: Wenn die App in den Hintergrund geht, speichern
         .onChange(of: viewModel.timers.count) { _ in viewModel.saveData() }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
