@@ -9,6 +9,14 @@ class TimeParser {
         return cal
     }()
     
+    private let defaultHour: Int
+    private let defaultMinute: Int
+    
+    init(defaultHour: Int, defaultMinute: Int) {
+        self.defaultHour = defaultHour
+        self.defaultMinute = defaultMinute
+    }
+    
     func parse(text: String) -> Date? {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let now = Date()
@@ -58,13 +66,13 @@ class TimeParser {
             components.day = day
             components.month = month
             
-            // Standardzeit 09:00, falls keine Zeit angegeben
+            // Standardzeit konfigurieren, falls keine Zeit angegeben
             if match.count > 3, let hStr = match.3, let mStr = match.4, let h = Int(hStr), let m = Int(mStr) {
                 components.hour = h
                 components.minute = m
             } else {
-                components.hour = 9
-                components.minute = 0
+                components.hour = defaultHour
+                components.minute = defaultMinute
             }
             
             guard let targetDate = calendar.date(from: components) else { return nil }
