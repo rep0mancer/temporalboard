@@ -14,12 +14,17 @@ class TimeParser {
         let now = Date()
         
         // 1. Relative duration: "30 min", "45m", "1h"
-        let durationPattern = #"^(\d+)\s*(m|min|mins|minutes|h|hour|hours)$"#
-        if let match = cleanText.matches(for: durationPattern).first {
+        let durationPattern = #"^(\d+)\s*(m|min|mins|minute|minutes|minuto|minutos|minuti|minuten|h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std)$"#
+        if let match = cleanText.matches(for: durationPattern)?.first {
             let value = Int(match.1) ?? 0
             let unit = match.2
+            let hourUnits: Set<String> = [
+                "h", "hr", "hrs", "hour", "hours",
+                "hora", "horas", "heure", "heures",
+                "ora", "ore", "stunde", "stunden", "std"
+            ]
             
-            if unit.starts(with: "h") {
+            if hourUnits.contains(unit) {
                 return calendar.date(byAdding: .hour, value: value, to: now)
             } else {
                 return calendar.date(byAdding: .minute, value: value, to: now)
@@ -28,7 +33,7 @@ class TimeParser {
         
         // 2. Absolute time (today or next day): "14:30", "9:05"
         let timePattern = #"^(\d{1,2})[:\.](\d{2})$"#
-        if let match = cleanText.matches(for: timePattern).first {
+        if let match = cleanText.matches(for: timePattern)?.first {
             guard let hour = Int(match.1), let minute = Int(match.2) else { return nil }
             
             // Validate hour and minute ranges
@@ -58,7 +63,7 @@ class TimeParser {
         
         // 3. Date format: "03.02", "3.2", optionally with time "03.02 14:30"
         let datePattern = #"^(\d{1,2})[./](\d{1,2})(?:\s+(\d{1,2})[:\.](\d{2}))?$"#
-        if let match = cleanText.matches(for: datePattern).first {
+        if let match = cleanText.matches(for: datePattern)?.first {
             guard let day = Int(match.1), let month = Int(match.2) else { return nil }
             
             // Validate day and month ranges
@@ -69,7 +74,8 @@ class TimeParser {
             components.month = month
             
             // Default time is 09:00 if not specified
-            if match.count > 3, let hStr = match.3, let mStr = match.4,
+            if let hStr = match.3, let mStr = match.4,
+               !hStr.isEmpty, !mStr.isEmpty,
                let h = Int(hStr), let m = Int(mStr) {
                 // Validate hour/minute
                 guard h >= 0 && h <= 23 && m >= 0 && m <= 59 else { return nil }
@@ -110,26 +116,22 @@ extension String {
             
             return results.map { result in
                 let text = self
+                func stringForRange(_ range: NSRange) -> String? {
+                    guard range.location != NSNotFound,
+                          let swiftRange = Range(range, in: text) else {
+                        return nil
+                    }
+                    return String(text[swiftRange])
+                }
                 
                 // Extract capture groups safely
-                let g1 = result.range(at: 1).location != NSNotFound
-                    ? String(text[Range(result.range(at: 1), in: text)!])
-                    : ""
-                let g2 = result.range(at: 2).location != NSNotFound
-                    ? String(text[Range(result.range(at: 2), in: text)!])
-                    : ""
+                let g1 = stringForRange(result.range(at: 1)) ?? ""
+                let g2 = stringForRange(result.range(at: 2)) ?? ""
                 
-                var g3: String? = nil
-                if result.numberOfRanges > 3, result.range(at: 3).location != NSNotFound {
-                    g3 = String(text[Range(result.range(at: 3), in: text)!])
-                }
+                let g3 = stringForRange(result.range(at: 3))
+                let g4 = stringForRange(result.range(at: 4))
                 
-                var g4: String? = nil
-                if result.numberOfRanges > 4, result.range(at: 4).location != NSNotFound {
-                    g4 = String(text[Range(result.range(at: 4), in: text)!])
-                }
-                
-                let fullMatch = String(text[Range(result.range(at: 0), in: text)!])
+                let fullMatch = stringForRange(result.range(at: 0)) ?? ""
                 return (fullMatch, g1, g2, g3, g4)
             }
         } catch {

@@ -14,51 +14,91 @@ struct TemporalBoardApp: App {
 
 class BoardViewModel: ObservableObject {
     // Data only - no UIKit views
-    @Published var drawing: PKDrawing = PKDrawing()
-    @Published var timers: [BoardTimer] = []
+    @Published var drawing: PKDrawing = PKDrawing() {
+        didSet {
+            scheduleSaveDrawing()
+        }
+    }
+    @Published var timers: [BoardTimer] = [] {
+        didSet {
+            scheduleSaveTimers()
+        }
+    }
     
     private let drawingURL: URL
     private let timersURL: URL
+    private let ioQueue = DispatchQueue(label: "BoardViewModel.io", qos: .utility)
+    private var drawingSaveWorkItem: DispatchWorkItem?
+    private var timersSaveWorkItem: DispatchWorkItem?
+    private var isLoading = false
     
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         drawingURL = docs.appendingPathComponent("drawing.data")
         timersURL = docs.appendingPathComponent("timers.json")
         
+        isLoading = true
         loadData()
+        isLoading = false
     }
     
     func updateTimers(_ newTimers: [BoardTimer]) {
         self.timers = newTimers
-        saveTimers()
     }
     
     func addTimers(_ newTimers: [BoardTimer]) {
         timers.append(contentsOf: newTimers)
-        saveTimers()
     }
     
     func updateDrawing(_ newDrawing: PKDrawing) {
         // Only update if actually changed to avoid unnecessary redraws
         if drawing.dataRepresentation() != newDrawing.dataRepresentation() {
             drawing = newDrawing
-            saveDrawing()
         }
     }
     
     func saveData() {
-        saveDrawing()
-        saveTimers()
+        saveDrawing(immediately: true)
+        saveTimers(immediately: true)
     }
     
-    func saveDrawing() {
+    private func scheduleSaveDrawing() {
+        saveDrawing(immediately: false)
+    }
+    
+    private func scheduleSaveTimers() {
+        saveTimers(immediately: false)
+    }
+    
+    private func saveDrawing(immediately: Bool) {
+        guard !isLoading else { return }
+        drawingSaveWorkItem?.cancel()
         let data = drawing.dataRepresentation()
-        try? data.write(to: drawingURL)
+        let workItem = DispatchWorkItem { [drawingURL] in
+            try? data.write(to: drawingURL, options: .atomic)
+        }
+        drawingSaveWorkItem = workItem
+        if immediately {
+            ioQueue.async(execute: workItem)
+        } else {
+            ioQueue.asyncAfter(deadline: .now() + 0.4, execute: workItem)
+        }
     }
     
-    func saveTimers() {
-        if let encoded = try? JSONEncoder().encode(timers) {
-            try? encoded.write(to: timersURL)
+    private func saveTimers(immediately: Bool) {
+        guard !isLoading else { return }
+        timersSaveWorkItem?.cancel()
+        let timersSnapshot = timers
+        let workItem = DispatchWorkItem { [timersURL] in
+            if let encoded = try? JSONEncoder().encode(timersSnapshot) {
+                try? encoded.write(to: timersURL, options: .atomic)
+            }
+        }
+        timersSaveWorkItem = workItem
+        if immediately {
+            ioQueue.async(execute: workItem)
+        } else {
+            ioQueue.asyncAfter(deadline: .now() + 0.4, execute: workItem)
         }
     }
     
@@ -106,7 +146,6 @@ struct ContentView: View {
                 Spacer()
             }
         }
-        .onChange(of: viewModel.timers.count) { _ in viewModel.saveData() }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
                 viewModel.saveData()
