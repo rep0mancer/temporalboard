@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PencilKit
 import Vision
 
@@ -107,15 +108,17 @@ struct CanvasView: UIViewRepresentable {
             // Skip if empty
             if bounds.isEmpty { return }
             
-            // Generate image from drawing
-            let image = drawing.image(from: bounds, scale: 1.0)
-            guard let cgImage = image.cgImage else { return }
-            
             let token = UUID()
             recognitionToken = token
+            let scale = UIScreen.main.scale
+            let languages = recognitionLanguages()
             
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 guard let self = self else { return }
+                
+                // Generate image off the main thread
+                let image = drawing.image(from: bounds, scale: scale)
+                guard let cgImage = image.cgImage else { return }
                 
                 let request = VNRecognizeTextRequest { [weak self] request, error in
                     guard let self = self,
@@ -129,11 +132,27 @@ struct CanvasView: UIViewRepresentable {
                 
                 request.recognitionLevel = .accurate
                 request.usesLanguageCorrection = true
-                request.recognitionLanguages = ["de-DE", "en-US"]
+                request.automaticallyDetectsLanguage = true
+                request.recognitionLanguages = languages
                 
                 let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
                 try? handler.perform([request])
             }
+        }
+        
+        private func recognitionLanguages() -> [String] {
+            var languages: [String] = []
+            for identifier in Locale.preferredLanguages {
+                let normalized = Locale(identifier: identifier).identifier
+                if !normalized.isEmpty, !languages.contains(normalized) {
+                    languages.append(normalized)
+                }
+            }
+            let fallbacks = ["en-US", "de-DE"]
+            for fallback in fallbacks where !languages.contains(fallback) {
+                languages.append(fallback)
+            }
+            return Array(languages.prefix(3))
         }
         
         func processObservations(_ observations: [VNRecognizedTextObservation], in drawingBounds: CGRect) {
@@ -189,12 +208,12 @@ struct CanvasView: UIViewRepresentable {
         func updateTimerViews(in canvasView: PKCanvasView, with timers: [BoardTimer]) {
             // 1. Remove labels for timers that no longer exist
             let currentIDs = Set(timers.map { $0.id })
-            for (id, label) in timerLabels {
-                if !currentIDs.contains(id) {
-                    label.stopTimer()
-                    label.removeFromSuperview()
-                    timerLabels.removeValue(forKey: id)
-                }
+            let idsToRemove = timerLabels.keys.filter { !currentIDs.contains($0) }
+            for id in idsToRemove {
+                guard let label = timerLabels[id] else { continue }
+                label.stopTimer()
+                label.removeFromSuperview()
+                timerLabels.removeValue(forKey: id)
             }
             
             // 2. Create or update labels for existing timers
@@ -208,8 +227,12 @@ struct CanvasView: UIViewRepresentable {
                     }
                 } else {
                     // Create new self-updating timer label
-                    label = TimerLabel(targetDate: timer.targetDate)
+                    label = TimerLabel(timerID: timer.id, targetDate: timer.targetDate)
                     label.frame.size = CGSize(width: 80, height: 24)
+                    label.addGestureRecognizer(UITapGestureRecognizer(
+                        target: self,
+                        action: #selector(handleTimerLabelTap(_:))
+                    ))
                     
                     // Position at content coordinates - let PKCanvasView handle scrolling
                     // Add as subview to canvasView so it scrolls with content
@@ -224,6 +247,101 @@ struct CanvasView: UIViewRepresentable {
                 label.frame.origin = CGPoint(x: contentX, y: contentY)
             }
         }
+        
+        // MARK: - Timer Editing
+        
+        @objc private func handleTimerLabelTap(_ gesture: UITapGestureRecognizer) {
+            guard let label = gesture.view as? TimerLabel else { return }
+            let timerID = label.timerID
+            guard let timer = parent.timers.first(where: { $0.id == timerID }) else { return }
+            presentTimerEditAlert(for: timer)
+        }
+        
+        private func presentTimerEditAlert(for timer: BoardTimer) {
+            let alert = UIAlertController(
+                title: "Edit Timer",
+                message: "Enter a new time.",
+                preferredStyle: .alert
+            )
+            alert.addTextField { field in
+                field.text = timer.originalText
+                field.autocapitalizationType = .none
+                field.autocorrectionType = .no
+            }
+            
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+                self?.deleteTimer(timer.id)
+            })
+            alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
+                guard let self = self else { return }
+                let newText = alert?.textFields?.first?.text?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !newText.isEmpty else {
+                    self.presentValidationAlert(message: "Enter a time.")
+                    return
+                }
+                guard let newDate = self.timeParser.parse(text: newText) else {
+                    self.presentValidationAlert(message: "Could not parse time.")
+                    return
+                }
+                self.updateTimer(timerID: timer.id, newText: newText, newDate: newDate)
+            })
+            
+            presentAlert(alert)
+        }
+        
+        private func updateTimer(timerID: UUID, newText: String, newDate: Date) {
+            DispatchQueue.main.async {
+                var updatedTimers = self.parent.timers
+                guard let index = updatedTimers.firstIndex(where: { $0.id == timerID }) else { return }
+                updatedTimers[index].originalText = newText
+                updatedTimers[index].targetDate = newDate
+                updatedTimers[index].isExpired = newDate <= Date()
+                self.parent.timers = updatedTimers
+            }
+        }
+        
+        private func deleteTimer(_ timerID: UUID) {
+            DispatchQueue.main.async {
+                self.parent.timers.removeAll { $0.id == timerID }
+            }
+        }
+        
+        private func presentValidationAlert(message: String) {
+            let alert = UIAlertController(title: "Invalid Time", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presentAlert(alert)
+        }
+        
+        private func presentAlert(_ alert: UIAlertController) {
+            guard let presenter = topViewController() else { return }
+            presenter.present(alert, animated: true)
+        }
+        
+        private func topViewController() -> UIViewController? {
+            if let root = canvasView?.window?.rootViewController {
+                return topViewController(from: root)
+            }
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+                return topViewController(from: root)
+            }
+            return nil
+        }
+        
+        private func topViewController(from base: UIViewController?) -> UIViewController? {
+            if let nav = base as? UINavigationController {
+                return topViewController(from: nav.visibleViewController)
+            }
+            if let tab = base as? UITabBarController {
+                return topViewController(from: tab.selectedViewController)
+            }
+            if let presented = base?.presentedViewController {
+                return topViewController(from: presented)
+            }
+            return base
+        }
     }
 }
 
@@ -232,15 +350,18 @@ struct CanvasView: UIViewRepresentable {
 // preventing the need for a global timer that redraws the entire view hierarchy.
 
 class TimerLabel: UILabel {
+    let timerID: UUID
     var targetDate: Date {
         didSet {
             updateDisplay()
+            startTimerIfNeeded()
         }
     }
     
     private var displayTimer: Timer?
     
-    init(targetDate: Date) {
+    init(timerID: UUID, targetDate: Date) {
+        self.timerID = timerID
         self.targetDate = targetDate
         super.init(frame: .zero)
         setupAppearance()
@@ -265,7 +386,7 @@ class TimerLabel: UILabel {
         layer.cornerRadius = 4
         clipsToBounds = true
         textAlignment = .center
-        isUserInteractionEnabled = false // Let events pass through to canvas
+        isUserInteractionEnabled = true
         
         updateDisplay()
     }
@@ -275,9 +396,11 @@ class TimerLabel: UILabel {
         updateDisplay()
         
         // Create timer that fires every second to update this label only
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.updateDisplay()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        displayTimer = timer
     }
     
     func stopTimer() {
@@ -308,6 +431,13 @@ class TimerLabel: UILabel {
                 let s = Int(remaining) % 60
                 text = String(format: "%02d:%02d", m, s)
             }
+        }
+    }
+    
+    private func startTimerIfNeeded() {
+        guard displayTimer == nil else { return }
+        if targetDate.timeIntervalSince(Date()) > 0 {
+            startTimer()
         }
     }
 }
