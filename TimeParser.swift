@@ -88,15 +88,12 @@ class TimeParser {
             components.second = 0
             
             guard let targetDate = calendar.date(from: components) else { return nil }
-            
-            // If the date has passed this year, assume next year
+
+            // Past dates should not count as timers.
             if targetDate < now {
-                components.year = (components.year ?? calendar.component(.year, from: now)) + 1
-                if let nextYearDate = calendar.date(from: components) {
-                    return nextYearDate
-                }
+                return nil
             }
-            
+
             return targetDate
         }
         
@@ -109,7 +106,7 @@ class TimeParser {
 extension String {
     /// Matches the string against a regex pattern and returns captured groups.
     /// Returns an array of tuples containing the full match and up to 4 capture groups.
-    func matches(for regex: String) -> [(String, String, String?, String?, String?)]? {
+    func matches(for regex: String) -> [(String, String, String, String?, String?)]? {
         do {
             let regex = try NSRegularExpression(pattern: regex, options: .caseInsensitive)
             let results = regex.matches(in: self, range: NSRange(self.startIndex..., in: self))
