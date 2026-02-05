@@ -50,7 +50,7 @@ class BoardViewModel: ObservableObject {
         }
     }
     
-    /// Number of active (non-expired) timers for the UI badge.
+    /// Number of active (non-expired) timers.
     var activeTimerCount: Int {
         let now = Date()
         return timers.filter { $0.targetDate > now }.count
@@ -103,6 +103,11 @@ class BoardViewModel: ObservableObject {
                 timers[i].isDismissed = true
             }
         }
+    }
+    
+    func clearAll() {
+        timers.removeAll()
+        drawing = PKDrawing()
     }
     
     func saveData() {
@@ -168,7 +173,6 @@ class BoardViewModel: ObservableObject {
     
     private func scheduleNotifications() {
         let center = UNUserNotificationCenter.current()
-        // Remove all pending (we reschedule on every change)
         center.removePendingNotificationRequests(withIdentifiers:
             timers.map { "timer-\($0.id.uuidString)" }
         )
@@ -182,6 +186,7 @@ class BoardViewModel: ObservableObject {
             content.body = timer.originalText
             content.sound = .default
             content.categoryIdentifier = "TIMER_EXPIRED"
+            content.interruptionLevel = .timeSensitive
             
             let interval = timer.targetDate.timeIntervalSince(now)
             guard interval > 0 else { continue }
@@ -202,9 +207,11 @@ class BoardViewModel: ObservableObject {
 struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showOnboarding = true
     
     var body: some View {
         ZStack {
+            // Full-bleed canvas
             CanvasView(
                 drawing: $viewModel.drawing,
                 timers: $viewModel.timers,
@@ -212,109 +219,19 @@ struct ContentView: View {
             )
             .edgesIgnoringSafeArea(.all)
             
-            // Top bar overlay
+            // Floating top bar — Freeform-style minimal overlay
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    // App title with active timer count
-                    HStack(spacing: 6) {
-                        Image(systemName: "timer")
-                            .font(.caption)
-                        Text("TemporalBoard")
-                            .font(.caption.weight(.semibold))
-                        
-                        if viewModel.activeTimerCount > 0 {
-                            Text("\(viewModel.activeTimerCount)")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.blue))
-                        }
-                        
-                        if viewModel.expiredTimerCount > 0 {
-                            Text("\(viewModel.expiredTimerCount) done")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.red))
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.thinMaterial)
-                    .cornerRadius(10)
-                    
-                    Spacer()
-                    
-                    // Action buttons
-                    if viewModel.expiredTimerCount > 0 {
-                        Button {
-                            viewModel.dismissAllAlerts()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "bell.slash")
-                                Text("Silence")
-                            }
-                            .font(.caption.weight(.medium))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.thinMaterial)
-                            .cornerRadius(10)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    
-                    if !viewModel.timers.isEmpty {
-                        Menu {
-                            if viewModel.expiredTimerCount > 0 {
-                                Button(role: .destructive) {
-                                    withAnimation {
-                                        viewModel.clearExpiredTimers()
-                                    }
-                                } label: {
-                                    Label("Clear Finished Timers", systemImage: "trash")
-                                }
-                            }
-                            
-                            Button(role: .destructive) {
-                                withAnimation {
-                                    viewModel.timers.removeAll()
-                                }
-                            } label: {
-                                Label("Clear All Timers", systemImage: "trash.fill")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.body)
-                                .padding(6)
-                                .background(.thinMaterial)
-                                .cornerRadius(10)
-                        }
-                    }
-                }
-                .padding(.horizontal)
-                .padding(.top, 8)
+                topBar
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
                 
                 Spacer()
                 
-                // Bottom hint for new users
-                if viewModel.timers.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "pencil.tip.crop.circle")
-                            .font(.largeTitle)
-                            .foregroundColor(.secondary)
-                        Text("Write something with a time to get started")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Text("Try: \"Meeting 15 min\" or \"Call at 14:30\"")
-                            .font(.caption)
-                            .foregroundColor(.secondary.opacity(0.7))
-                    }
-                    .padding()
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(16)
-                    .padding(.bottom, 100)
+                // Onboarding hint for empty boards
+                if viewModel.timers.isEmpty && showOnboarding {
+                    onboardingHint
+                        .padding(.bottom, 120)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
             }
         }
@@ -323,5 +240,135 @@ struct ContentView: View {
                 viewModel.saveData()
             }
         }
+        .onChange(of: viewModel.timers) { _ in
+            if !viewModel.timers.isEmpty {
+                withAnimation(.easeOut(duration: 0.4)) {
+                    showOnboarding = false
+                }
+            }
+        }
+    }
+    
+    // MARK: - Top Bar
+    
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            // App identity pill
+            HStack(spacing: 5) {
+                Image(systemName: "clock.badge.checkmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                
+                Text("TemporalBoard")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                
+                if viewModel.activeTimerCount > 0 {
+                    Text("\(viewModel.activeTimerCount)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.accentColor))
+                }
+                
+                if viewModel.expiredTimerCount > 0 {
+                    HStack(spacing: 2) {
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 8))
+                        Text("\(viewModel.expiredTimerCount)")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.red))
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            
+            Spacer()
+            
+            // Silence button when timers are ringing
+            if viewModel.expiredTimerCount > 0 {
+                Button {
+                    withAnimation(.spring(response: 0.3)) {
+                        viewModel.dismissAllAlerts()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "bell.slash.fill")
+                            .font(.system(size: 11))
+                        Text("Silence")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                    }
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+            
+            // Overflow menu
+            if !viewModel.timers.isEmpty {
+                Menu {
+                    if viewModel.expiredTimerCount > 0 {
+                        Button(role: .destructive) {
+                            withAnimation(.spring(response: 0.3)) {
+                                viewModel.clearExpiredTimers()
+                            }
+                        } label: {
+                            Label("Clear Finished", systemImage: "checkmark.circle")
+                        }
+                    }
+                    
+                    Button(role: .destructive) {
+                        withAnimation(.spring(response: 0.3)) {
+                            viewModel.timers.removeAll()
+                        }
+                    } label: {
+                        Label("Clear All Timers", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+            }
+        }
+        .animation(.spring(response: 0.35), value: viewModel.activeTimerCount)
+        .animation(.spring(response: 0.35), value: viewModel.expiredTimerCount)
+    }
+    
+    // MARK: - Onboarding Hint
+    
+    private var onboardingHint: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "pencil.tip.crop.circle")
+                .font(.system(size: 36))
+                .foregroundStyle(.tertiary)
+            
+            Text("Write anything with a time")
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+            
+            VStack(spacing: 4) {
+                Text("\"Meeting in 15 min\"")
+                Text("\"Call mom at 3pm\"")
+                Text("\"Lunch 12:30\"")
+            }
+            .font(.system(size: 13, design: .rounded))
+            .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
