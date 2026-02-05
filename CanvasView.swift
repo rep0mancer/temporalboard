@@ -72,6 +72,22 @@ struct CanvasView: UIViewRepresentable {
         
         init(_ parent: CanvasView) {
             self.parent = parent
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleAppWillResignActive),
+                name: UIApplication.willResignActiveNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleAppDidEnterBackground),
+                name: UIApplication.didEnterBackgroundNotification,
+                object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
         
         // MARK: - PKCanvasViewDelegate
@@ -97,6 +113,27 @@ struct CanvasView: UIViewRepresentable {
             }
             recognitionWorkItem = recognitionItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: recognitionItem)
+        }
+
+        @objc private func handleAppWillResignActive() {
+            flushPendingDrawingUpdate()
+        }
+
+        @objc private func handleAppDidEnterBackground() {
+            flushPendingDrawingUpdate()
+        }
+
+        private func flushPendingDrawingUpdate() {
+            saveWorkItem?.cancel()
+            guard let canvasView = canvasView else { return }
+            if Thread.isMainThread {
+                parent.drawing = canvasView.drawing
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, let canvasView = self.canvasView else { return }
+                    self.parent.drawing = canvasView.drawing
+                }
+            }
         }
         
         // MARK: - Text Recognition
@@ -359,6 +396,7 @@ class TimerLabel: UILabel {
     }
     
     private var displayTimer: Timer?
+    private var isBlinking = false
     
     init(timerID: UUID, targetDate: Date) {
         self.timerID = timerID
@@ -414,11 +452,13 @@ class TimerLabel: UILabel {
         
         if remaining <= 0 {
             text = "Done"
-            alpha = 0.5
+            alpha = 1.0
             textColor = .gray
+            startBlinking()
             // Stop the timer when expired
             stopTimer()
         } else {
+            stopBlinking()
             alpha = 1.0
             textColor = .systemBlue
             
@@ -439,5 +479,24 @@ class TimerLabel: UILabel {
         if targetDate.timeIntervalSince(Date()) > 0 {
             startTimer()
         }
+    }
+
+    private func startBlinking() {
+        guard !isBlinking else { return }
+        isBlinking = true
+        layer.removeAllAnimations()
+        UIView.animate(withDuration: 0.8,
+                       delay: 0,
+                       options: [.autoreverse, .repeat, .allowUserInteraction],
+                       animations: { [weak self] in
+                           self?.alpha = 0.3
+                       })
+    }
+
+    private func stopBlinking() {
+        guard isBlinking else { return }
+        isBlinking = false
+        layer.removeAllAnimations()
+        alpha = 1.0
     }
 }
