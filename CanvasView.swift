@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 import PencilKit
 import Vision
+import AudioToolbox
+import AVFoundation
 
 // MARK: - CanvasView (UIViewRepresentable)
 
@@ -12,20 +14,28 @@ struct CanvasView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
-        canvasView.tool = PKInkingTool(.pen, color: .black, width: 10)
+        canvasView.tool = PKInkingTool(.pen, color: .label, width: 3)
         canvasView.drawingPolicy = .anyInput
         canvasView.delegate = context.coordinator
-        canvasView.backgroundColor = .secondarySystemBackground
         canvasView.isOpaque = true
         
-        // Allow infinite scrolling
+        // Freeform-style background: light warm white with dot grid
+        let bgView = DotGridBackgroundView()
+        bgView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        canvasView.insertSubview(bgView, at: 0)
+        canvasView.backgroundColor = .clear
+        
+        // Allow infinite scrolling like Freeform
         canvasView.alwaysBounceVertical = true
         canvasView.alwaysBounceHorizontal = true
+        canvasView.minimumZoomScale = 0.25
+        canvasView.maximumZoomScale = 4.0
+        canvasView.contentSize = CGSize(width: 5000, height: 5000)
         
-        // Set initial drawing from data
+        // Set initial drawing
         canvasView.drawing = drawing
         
-        // Activate tool picker
+        // Tool picker — Apple Freeform style
         let toolPicker = PKToolPicker()
         toolPicker.setVisible(true, forFirstResponder: canvasView)
         toolPicker.addObserver(canvasView)
@@ -34,17 +44,15 @@ struct CanvasView: UIViewRepresentable {
         // Store references in coordinator
         context.coordinator.canvasView = canvasView
         context.coordinator.toolPicker = toolPicker
+        context.coordinator.backgroundView = bgView
         
         return canvasView
     }
     
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
-        // Update drawing if data changed externally
         if uiView.drawing.dataRepresentation() != drawing.dataRepresentation() {
             uiView.drawing = drawing
         }
-        
-        // Update timer views based on current state
         context.coordinator.updateTimerViews(in: uiView, with: timers)
     }
     
@@ -63,13 +71,17 @@ struct CanvasView: UIViewRepresentable {
         
         weak var canvasView: PKCanvasView?
         var toolPicker: PKToolPicker?
+        weak var backgroundView: DotGridBackgroundView?
         
         // Timer display components
         var timerLabels: [UUID: TimerLabel] = [:]
         var highlightViews: [UUID: HighlightOverlayView] = [:]
         
-        // Track which timers already triggered haptic feedback
+        // Track which timers already triggered haptic & audio feedback
         var hapticsTriggered: Set<UUID> = []
+        
+        // Audio player for alert sound
+        private var audioPlayer: AVAudioPlayer?
         
         init(_ parent: CanvasView) {
             self.parent = parent
@@ -87,8 +99,12 @@ struct CanvasView: UIViewRepresentable {
                 name: UIApplication.didEnterBackgroundNotification,
                 object: nil
             )
+            
+            // Configure audio session
+            try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+            try? AVAudioSession.sharedInstance().setActive(true)
         }
-
+        
         deinit {
             NotificationCenter.default.removeObserver(self)
         }
@@ -96,6 +112,7 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - PKCanvasViewDelegate
         
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            // Debounced save
             saveWorkItem?.cancel()
             let saveItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
@@ -114,15 +131,15 @@ struct CanvasView: UIViewRepresentable {
             recognitionWorkItem = recognitionItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: recognitionItem)
         }
-
+        
         @objc private func handleAppWillResignActive() {
             flushPendingDrawingUpdate()
         }
-
+        
         @objc private func handleAppDidEnterBackground() {
             flushPendingDrawingUpdate()
         }
-
+        
         private func flushPendingDrawingUpdate() {
             saveWorkItem?.cancel()
             guard let canvasView = canvasView else { return }
@@ -200,7 +217,6 @@ struct CanvasView: UIViewRepresentable {
                 guard let candidate = observation.topCandidates(1).first else { continue }
                 let text = candidate.string
                 
-                // Use the new parser that searches within text
                 guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
@@ -229,7 +245,6 @@ struct CanvasView: UIViewRepresentable {
                 }
                 
                 if !alreadyExists {
-                    // Determine pen color from nearby strokes
                     let penColor = dominantStrokeColor(near: textRect, in: strokes)
                     
                     let newTimer = BoardTimer(
@@ -248,7 +263,7 @@ struct CanvasView: UIViewRepresentable {
             if !newTimers.isEmpty {
                 parent.onAddTimers(newTimers)
                 
-                // Light haptic to confirm timer was recognized
+                // Subtle haptic to confirm recognition
                 let generator = UIImpactFeedbackGenerator(style: .light)
                 generator.impactOccurred()
             }
@@ -270,8 +285,7 @@ struct CanvasView: UIViewRepresentable {
                 }
             }
             
-            // Return the most common color, or black as fallback
-            return colorCounts.values.max(by: { $0.1 < $1.1 })?.0 ?? .black
+            return colorCounts.values.max(by: { $0.1 < $1.1 })?.0 ?? .label
         }
         
         // MARK: - Timer & Highlight Views Management
@@ -279,7 +293,7 @@ struct CanvasView: UIViewRepresentable {
         func updateTimerViews(in canvasView: PKCanvasView, with timers: [BoardTimer]) {
             let currentIDs = Set(timers.map { $0.id })
             
-            // Remove labels and highlights for timers that no longer exist
+            // Remove views for deleted timers
             for id in timerLabels.keys where !currentIDs.contains(id) {
                 timerLabels[id]?.stopTimer()
                 timerLabels[id]?.removeFromSuperview()
@@ -312,13 +326,21 @@ struct CanvasView: UIViewRepresentable {
                     ))
                     canvasView.addSubview(label)
                     timerLabels[timer.id] = label
+                    
+                    // Entrance animation — fade in + slight scale
+                    label.alpha = 0
+                    label.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+                    UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0.5) {
+                        label.alpha = 1
+                        label.transform = .identity
+                    }
                 }
                 
                 // Position below the text
-                let labelWidth: CGFloat = max(90, timer.textRect.width * 0.5)
+                let labelWidth: CGFloat = max(100, timer.textRect.width * 0.5)
                 let contentX = timer.anchorX - labelWidth / 2
-                let contentY = timer.anchorY + max(timer.textRect.height / 2, 10) + 8
-                label.frame = CGRect(x: contentX, y: contentY, width: labelWidth, height: 28)
+                let contentY = timer.anchorY + max(timer.textRect.height / 2, 10) + 6
+                label.frame = CGRect(x: contentX, y: contentY, width: labelWidth, height: 30)
                 
                 // --- Highlight Overlay ---
                 let isExpiredNow = timer.targetDate <= Date()
@@ -327,17 +349,16 @@ struct CanvasView: UIViewRepresentable {
                     let highlight: HighlightOverlayView
                     if let existing = highlightViews[timer.id] {
                         highlight = existing
+                        highlight.updatePenColor(penColor)
                     } else {
                         highlight = HighlightOverlayView(penColor: penColor)
                         canvasView.insertSubview(highlight, at: 0)
                         highlightViews[timer.id] = highlight
                     }
-                    // Expand rect slightly for visual effect
-                    let padding: CGFloat = 6
+                    let padding: CGFloat = 8
                     highlight.frame = timer.textRect.insetBy(dx: -padding, dy: -padding)
                     highlight.startAnimating()
                 } else {
-                    // Remove highlight if timer is not expired or dismissed
                     if let existing = highlightViews[timer.id] {
                         existing.stopAnimating()
                         existing.removeFromSuperview()
@@ -353,9 +374,17 @@ struct CanvasView: UIViewRepresentable {
             guard !hapticsTriggered.contains(timerID) else { return }
             hapticsTriggered.insert(timerID)
             
-            // Strong haptic feedback
-            let generator = UINotificationFeedbackGenerator()
-            generator.notificationOccurred(.warning)
+            // Strong haptic pattern: warning + impact
+            let notificationGen = UINotificationFeedbackGenerator()
+            notificationGen.notificationOccurred(.warning)
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                let impactGen = UIImpactFeedbackGenerator(style: .heavy)
+                impactGen.impactOccurred()
+            }
+            
+            // Play system alert sound
+            AudioServicesPlaySystemSound(1007) // tri-tone alert
             
             // Mark expired in model
             DispatchQueue.main.async {
@@ -379,31 +408,27 @@ struct CanvasView: UIViewRepresentable {
             
             let alert = UIAlertController(
                 title: timer.originalText,
-                message: isExpired ? "Timer finished!" : "Timer active",
+                message: isExpired ? "Timer finished!" : "Timer is running",
                 preferredStyle: .actionSheet
             )
             
             if isExpired {
-                // Dismiss alert (stop blinking)
                 alert.addAction(UIAlertAction(title: "Dismiss Alert", style: .default) { [weak self] _ in
                     self?.dismissTimerAlert(timer.id)
                 })
                 
-                // Restart same duration
                 if timer.isDuration {
                     alert.addAction(UIAlertAction(title: "Restart Timer", style: .default) { [weak self] _ in
                         self?.restartTimer(timer)
                     })
                 }
                 
-                // Quick extend options
                 for minutes in [1, 5, 10, 15] {
                     alert.addAction(UIAlertAction(title: "+\(minutes) min", style: .default) { [weak self] _ in
                         self?.extendTimer(timer.id, byMinutes: minutes)
                     })
                 }
             } else {
-                // Quick extend for running timers too
                 for minutes in [5, 10, 15, 30] {
                     alert.addAction(UIAlertAction(title: "+\(minutes) min", style: .default) { [weak self] _ in
                         self?.extendTimer(timer.id, byMinutes: minutes)
@@ -411,19 +436,16 @@ struct CanvasView: UIViewRepresentable {
                 }
             }
             
-            // Edit
             alert.addAction(UIAlertAction(title: "Edit Time...", style: .default) { [weak self] _ in
                 self?.presentTimerEditAlert(for: timer)
             })
             
-            // Delete
             alert.addAction(UIAlertAction(title: "Delete Timer", style: .destructive) { [weak self] _ in
                 self?.deleteTimer(timer.id)
             })
             
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             
-            // For iPad: position the popover at the timer label
             if let popover = alert.popoverPresentationController,
                let label = timerLabels[timer.id] {
                 popover.sourceView = label
@@ -446,7 +468,6 @@ struct CanvasView: UIViewRepresentable {
                 guard let idx = self.parent.timers.firstIndex(where: { $0.id == timerID }) else { return }
                 let now = Date()
                 let currentTarget = self.parent.timers[idx].targetDate
-                // If expired, extend from now; if active, extend from current target
                 let base = currentTarget > now ? currentTarget : now
                 if let newDate = Calendar.current.date(byAdding: .minute, value: minutes, to: base) {
                     self.parent.timers[idx].targetDate = newDate
@@ -460,7 +481,6 @@ struct CanvasView: UIViewRepresentable {
         private func restartTimer(_ timer: BoardTimer) {
             DispatchQueue.main.async {
                 guard let idx = self.parent.timers.firstIndex(where: { $0.id == timer.id }) else { return }
-                // Re-parse the original text to get the same duration
                 if let newDate = self.timeParser.parse(text: timer.originalText) {
                     self.parent.timers[idx].targetDate = newDate
                     self.parent.timers[idx].isExpired = false
@@ -473,7 +493,7 @@ struct CanvasView: UIViewRepresentable {
         private func presentTimerEditAlert(for timer: BoardTimer) {
             let alert = UIAlertController(
                 title: "Edit Timer",
-                message: "Enter a new time or duration (e.g. \"15 min\" or \"14:30\").",
+                message: "Enter a new time or duration\ne.g. \"15 min\", \"2:30 PM\", \"14:30\"",
                 preferredStyle: .alert
             )
             alert.addTextField { field in
@@ -492,7 +512,7 @@ struct CanvasView: UIViewRepresentable {
                     return
                 }
                 guard let newDate = self.timeParser.parse(text: newText) else {
-                    self.presentValidationAlert(message: "Could not parse the time. Try formats like \"15 min\" or \"14:30\".")
+                    self.presentValidationAlert(message: "Could not parse. Try \"15 min\", \"3pm\", or \"14:30\".")
                     return
                 }
                 self.updateTimer(timerID: timer.id, newText: newText, newDate: newDate)
@@ -557,59 +577,174 @@ struct CanvasView: UIViewRepresentable {
     }
 }
 
-// MARK: - HighlightOverlayView
-// Draws a translucent colored rectangle over the handwritten text that pulses/flashes
-// when the timer expires to make the whole sentence noticeable.
+// MARK: - Dot Grid Background (Freeform-inspired)
 
-class HighlightOverlayView: UIView {
-    private var pulseTimer: Timer?
-    private let penColor: UIColor
+class DotGridBackgroundView: UIView {
     
-    init(penColor: UIColor) {
-        self.penColor = penColor
-        super.init(frame: .zero)
+    private let dotSpacing: CGFloat = 26
+    private let dotRadius: CGFloat = 1.2
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
         backgroundColor = .clear
+        isOpaque = false
         isUserInteractionEnabled = false
-        layer.cornerRadius = 6
-        clipsToBounds = true
-        alpha = 0
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func startAnimating() {
-        guard pulseTimer == nil else { return }
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
         
-        // Use a warm highlight color derived from the pen color
-        let highlightColor = penColor.withAlphaComponent(0.15)
-        backgroundColor = highlightColor
+        // Background fill — warm white matching Freeform
+        let bgColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+                : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
+        }
+        ctx.setFillColor(bgColor.cgColor)
+        ctx.fill(rect)
         
-        // Add a colored border
-        layer.borderWidth = 2.0
-        layer.borderColor = penColor.withAlphaComponent(0.6).cgColor
+        // Dot color
+        let dotColor = UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(white: 1.0, alpha: 0.08)
+                : UIColor(white: 0.0, alpha: 0.08)
+        }
+        ctx.setFillColor(dotColor.cgColor)
         
-        // Pulse animation
-        alpha = 0
-        layer.removeAllAnimations()
-        UIView.animate(withDuration: 0.7,
-                       delay: 0,
-                       options: [.autoreverse, .repeat, .allowUserInteraction, .curveEaseInOut],
-                       animations: { [weak self] in
-                           self?.alpha = 1.0
-                       })
-    }
-    
-    func stopAnimating() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
-        layer.removeAllAnimations()
-        alpha = 0
+        let startX = floor(rect.minX / dotSpacing) * dotSpacing
+        let startY = floor(rect.minY / dotSpacing) * dotSpacing
+        
+        var x = startX
+        while x <= rect.maxX {
+            var y = startY
+            while y <= rect.maxY {
+                let dotRect = CGRect(x: x - dotRadius, y: y - dotRadius,
+                                     width: dotRadius * 2, height: dotRadius * 2)
+                ctx.fillEllipse(in: dotRect)
+                y += dotSpacing
+            }
+            x += dotSpacing
+        }
     }
 }
 
-// MARK: - TimerLabel (Self-updating UILabel)
+// MARK: - HighlightOverlayView
+// Dramatic pulsing glow effect when a timer expires — covers the handwritten sentence.
+
+class HighlightOverlayView: UIView {
+    
+    private var isAnimating = false
+    private var penColor: UIColor
+    private let glowLayer = CAGradientLayer()
+    
+    init(penColor: UIColor) {
+        self.penColor = penColor
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        layer.cornerRadius = 8
+        clipsToBounds = false
+        alpha = 0
+        
+        setupGlow()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func updatePenColor(_ color: UIColor) {
+        penColor = color
+        setupGlow()
+    }
+    
+    private func setupGlow() {
+        glowLayer.removeFromSuperlayer()
+        
+        // Soft radial-style glow using a gradient layer
+        glowLayer.colors = [
+            penColor.withAlphaComponent(0.0).cgColor,
+            penColor.withAlphaComponent(0.08).cgColor,
+            penColor.withAlphaComponent(0.18).cgColor,
+            penColor.withAlphaComponent(0.08).cgColor,
+            penColor.withAlphaComponent(0.0).cgColor
+        ]
+        glowLayer.locations = [0, 0.15, 0.5, 0.85, 1.0]
+        glowLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        glowLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        glowLayer.cornerRadius = 8
+        layer.insertSublayer(glowLayer, at: 0)
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Expand glow beyond bounds
+        let inset: CGFloat = -12
+        glowLayer.frame = bounds.insetBy(dx: inset, dy: inset)
+    }
+    
+    func startAnimating() {
+        guard !isAnimating else { return }
+        isAnimating = true
+        
+        // Add a colored border that pulses
+        layer.borderWidth = 2.5
+        layer.borderColor = penColor.withAlphaComponent(0.5).cgColor
+        
+        // Background highlight
+        backgroundColor = penColor.withAlphaComponent(0.06)
+        
+        // Dramatic pulse: opacity oscillation + subtle scale bounce
+        layer.removeAllAnimations()
+        alpha = 0
+        
+        // Opacity pulse
+        let opacityAnim = CABasicAnimation(keyPath: "opacity")
+        opacityAnim.fromValue = 0.3
+        opacityAnim.toValue = 1.0
+        opacityAnim.duration = 0.8
+        opacityAnim.autoreverses = true
+        opacityAnim.repeatCount = .infinity
+        opacityAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(opacityAnim, forKey: "pulse")
+        
+        // Subtle scale bounce
+        let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnim.fromValue = 1.0
+        scaleAnim.toValue = 1.02
+        scaleAnim.duration = 0.8
+        scaleAnim.autoreverses = true
+        scaleAnim.repeatCount = .infinity
+        scaleAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(scaleAnim, forKey: "breathe")
+        
+        // Border color flash
+        let borderAnim = CABasicAnimation(keyPath: "borderColor")
+        borderAnim.fromValue = penColor.withAlphaComponent(0.3).cgColor
+        borderAnim.toValue = penColor.withAlphaComponent(0.8).cgColor
+        borderAnim.duration = 0.8
+        borderAnim.autoreverses = true
+        borderAnim.repeatCount = .infinity
+        borderAnim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(borderAnim, forKey: "borderFlash")
+        
+        alpha = 1.0
+    }
+    
+    func stopAnimating() {
+        isAnimating = false
+        layer.removeAllAnimations()
+        alpha = 0
+        layer.borderWidth = 0
+        backgroundColor = .clear
+    }
+}
+
+// MARK: - TimerLabel (Self-updating countdown badge)
 
 class TimerLabel: UILabel {
     let timerID: UUID
@@ -628,7 +763,7 @@ class TimerLabel: UILabel {
     private var expiredCallbackFired = false
     private var penColor: UIColor
     
-    init(timerID: UUID, targetDate: Date, penColor: UIColor = .black) {
+    init(timerID: UUID, targetDate: Date, penColor: UIColor = .label) {
         self.timerID = timerID
         self.targetDate = targetDate
         self.penColor = penColor
@@ -647,38 +782,45 @@ class TimerLabel: UILabel {
     
     func updatePenColor(_ color: UIColor) {
         penColor = color
-        // Update border and text tint
-        layer.borderColor = penColor.withAlphaComponent(0.4).cgColor
-        if targetDate.timeIntervalSince(Date()) > 0 {
-            textColor = penColor.withAlphaComponent(0.85)
+        if targetDate.timeIntervalSince(Date()) > 60 {
+            layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
         }
     }
     
+    private func adaptiveAccent() -> UIColor {
+        // Use pen color if it's visible enough, otherwise use system tint
+        var hue: CGFloat = 0, sat: CGFloat = 0, bri: CGFloat = 0, alp: CGFloat = 0
+        penColor.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
+        return sat > 0.15 ? penColor : .systemBlue
+    }
+    
     private func setupAppearance() {
-        // Use a handwriting-style rounded font
-        let size: CGFloat = 15
-        if let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
-            .withDesign(.rounded)?
+        let size: CGFloat = 13
+        if let descriptor = UIFontDescriptor
+            .preferredFontDescriptor(withTextStyle: .caption1)
+            .withDesign(.monospaced)?
             .withSymbolicTraits(.traitBold) {
             font = UIFont(descriptor: descriptor, size: size)
         } else {
-            font = UIFont.systemFont(ofSize: size, weight: .semibold)
+            font = .monospacedDigitSystemFont(ofSize: size, weight: .semibold)
         }
         
-        textColor = penColor.withAlphaComponent(0.85)
-        backgroundColor = UIColor.systemBackground.withAlphaComponent(0.85)
-        layer.cornerRadius = 6
-        layer.borderWidth = 1.5
-        layer.borderColor = penColor.withAlphaComponent(0.4).cgColor
+        textColor = adaptiveAccent()
+        
+        // Frosted glass pill appearance
+        backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
+        layer.cornerRadius = 8
+        layer.borderWidth = 1
+        layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
         clipsToBounds = true
         textAlignment = .center
         isUserInteractionEnabled = true
         
-        // Subtle shadow for depth
+        // Subtle shadow
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.08
+        layer.shadowOpacity = 0.06
         layer.shadowOffset = CGSize(width: 0, height: 1)
-        layer.shadowRadius = 2
+        layer.shadowRadius = 3
         layer.masksToBounds = false
         
         updateDisplay()
@@ -704,24 +846,24 @@ class TimerLabel: UILabel {
         let remaining = targetDate.timeIntervalSince(now)
         
         if remaining <= 0 {
-            // Show overtime counter: how long past the deadline
+            // Overtime display
             let overtime = abs(remaining)
-            let prefix = "−" // minus sign
+            let prefix = "−"
             if overtime > 3600 {
                 let h = Int(overtime) / 3600
                 let m = (Int(overtime) % 3600) / 60
-                text = "\(prefix)\(h)h \(String(format: "%02d", m))m"
+                text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
             } else {
                 let m = Int(overtime) / 60
                 let s = Int(overtime) % 60
-                text = "\(prefix)\(String(format: "%02d:%02d", m, s))"
+                text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
             }
             
             textColor = .systemRed
-            layer.borderColor = UIColor.systemRed.withAlphaComponent(0.5).cgColor
+            backgroundColor = UIColor.systemRed.withAlphaComponent(0.08)
+            layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
             startBlinking()
             
-            // Fire expired callback once
             if !expiredCallbackFired {
                 expiredCallbackFired = true
                 onExpired?(timerID)
@@ -729,23 +871,33 @@ class TimerLabel: UILabel {
         } else {
             stopBlinking()
             alpha = 1.0
-            textColor = penColor.withAlphaComponent(0.85)
-            layer.borderColor = penColor.withAlphaComponent(0.4).cgColor
+            backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
             
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
                 let m = (Int(remaining) % 3600) / 60
-                text = String(format: "%dh %02dm", h, m)
+                text = " \(String(format: "%dh %02dm", h, m)) "
             } else {
                 let m = Int(remaining) / 60
                 let s = Int(remaining) % 60
-                text = String(format: "%02d:%02d", m, s)
+                text = " \(String(format: "%02d:%02d", m, s)) "
             }
             
-            // Change color when close to expiry (< 60 seconds)
-            if remaining < 60 {
+            // Color transitions based on urgency
+            if remaining < 30 {
+                textColor = .systemRed
+                layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
+                backgroundColor = UIColor.systemRed.withAlphaComponent(0.05)
+            } else if remaining < 60 {
                 textColor = .systemOrange
-                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.5).cgColor
+                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.4).cgColor
+                backgroundColor = UIColor.systemOrange.withAlphaComponent(0.05)
+            } else if remaining < 300 {
+                textColor = .systemYellow.blended(with: .systemOrange)
+                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.25).cgColor
+            } else {
+                textColor = adaptiveAccent()
+                layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
             }
         }
     }
@@ -754,23 +906,42 @@ class TimerLabel: UILabel {
         guard displayTimer == nil else { return }
         startTimer()
     }
-
+    
     private func startBlinking() {
         guard !isBlinking else { return }
         isBlinking = true
         layer.removeAllAnimations()
-        UIView.animate(withDuration: 0.6,
+        UIView.animate(withDuration: 0.5,
                        delay: 0,
-                       options: [.autoreverse, .repeat, .allowUserInteraction],
+                       options: [.autoreverse, .repeat, .allowUserInteraction, .curveEaseInOut],
                        animations: { [weak self] in
-                           self?.alpha = 0.25
+                           self?.alpha = 0.2
                        })
     }
-
+    
     private func stopBlinking() {
         guard isBlinking else { return }
         isBlinking = false
         layer.removeAllAnimations()
         alpha = 1.0
+    }
+}
+
+// MARK: - UIColor Blending Helper
+
+extension UIColor {
+    func blended(with other: UIColor, ratio: CGFloat = 0.5) -> UIColor {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        
+        getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        other.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        
+        let r = r1 * (1 - ratio) + r2 * ratio
+        let g = g1 * (1 - ratio) + g2 * ratio
+        let b = b1 * (1 - ratio) + b2 * ratio
+        let a = a1 * (1 - ratio) + a2 * ratio
+        
+        return UIColor(red: r, green: g, blue: b, alpha: a)
     }
 }
