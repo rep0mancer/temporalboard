@@ -24,7 +24,7 @@ class TimeParser {
     private static let compoundDurationRegex: NSRegularExpression = {
         let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
         let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
-        let pattern = #"(\d{1,3})\s*(?:"# + hourUnits + #")\s*(\d{1,3})\s*(?:"# + minuteUnits + #")"#
+        let pattern = #"(\d{1,3}(?:\.\d+)?)\s*(?:"# + hourUnits + #")\s*(\d{1,3}(?:\.\d+)?)\s*(?:"# + minuteUnits + #")"#
         return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
     }()
     
@@ -32,7 +32,7 @@ class TimeParser {
         let secondUnits = "s|sec|secs|second|seconds|sekunde|sekunden|sek"
         let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
         let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
-        let pattern = #"(?:^|\s|[^\d])(\d{1,4})\s*("# + secondUnits + "|" + minuteUnits + "|" + hourUnits + #")(?:\s|$|[^\w])"#
+        let pattern = #"(?:^|\s|[^\d])(\d{1,4}(?:\.\d+)?)\s*("# + secondUnits + "|" + minuteUnits + "|" + hourUnits + #")(?:\s|$|[^\w])"#
         return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
     }()
     
@@ -127,13 +127,14 @@ class TimeParser {
         guard let hoursRange = Range(match.range(at: 1), in: text),
               let minutesRange = Range(match.range(at: 2), in: text) else { return nil }
         
-        guard let hours = Int(text[hoursRange]), hours >= 0, hours <= 48,
-              let minutes = Int(text[minutesRange]), minutes >= 0, minutes <= 59 else { return nil }
+        guard let hours = Double(text[hoursRange]), hours >= 0, hours <= 48,
+              let minutes = Double(text[minutesRange]), minutes >= 0, minutes <= 59 else { return nil }
         
-        let totalMinutes = hours * 60 + minutes
-        guard totalMinutes > 0 else { return nil }
+        // Convert to total seconds so decimal values (e.g. 1.5h 30m) are calculated correctly.
+        let totalSeconds = Int(round(hours * 3600 + minutes * 60))
+        guard totalSeconds > 0 else { return nil }
         
-        guard let targetDate = calendar.date(byAdding: .minute, value: totalMinutes, to: now) else { return nil }
+        guard let targetDate = calendar.date(byAdding: .second, value: totalSeconds, to: now) else { return nil }
         
         guard let fullRange = Range(match.range(at: 0), in: text) else { return nil }
         
@@ -165,16 +166,20 @@ class TimeParser {
         let valueStr = String(text[valueRange])
         let unitStr = String(text[unitRange]).lowercased()
         
-        guard let value = Int(valueStr), value > 0, value <= 2880 else { return nil }
+        guard let value = Double(valueStr), value > 0, value <= 2880 else { return nil }
         
-        let targetDate: Date?
+        // Convert to total seconds so decimal values (e.g. 1.5h = 90 min) are exact.
+        let totalSeconds: Int
         if Self.hourUnitsSet.contains(unitStr) {
-            targetDate = calendar.date(byAdding: .hour, value: value, to: now)
+            totalSeconds = Int(round(value * 3600))
         } else if Self.secondUnitsSet.contains(unitStr) {
-            targetDate = calendar.date(byAdding: .second, value: value, to: now)
+            totalSeconds = Int(round(value))
         } else {
-            targetDate = calendar.date(byAdding: .minute, value: value, to: now)
+            // Minutes
+            totalSeconds = Int(round(value * 60))
         }
+        
+        let targetDate = calendar.date(byAdding: .second, value: totalSeconds, to: now)
         
         guard let date = targetDate else { return nil }
         
