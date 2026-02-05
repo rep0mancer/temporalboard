@@ -128,11 +128,41 @@ class BoardViewModel: ObservableObject {
             bgTaskID = .invalid
         }
         
-        saveDrawing(immediately: true)
-        saveTimers(immediately: true)
+        // Cancel any pending debounced saves — we're performing a definitive flush now.
+        drawingSaveWorkItem?.cancel()
+        timersSaveWorkItem?.cancel()
         
-        // Since ioQueue is serial, this runs after both saves complete.
+        guard !isLoading else {
+            application.endBackgroundTask(bgTaskID)
+            return
+        }
+        
+        // Snapshot current state on the main thread before dispatching IO.
+        let drawingData = drawing.dataRepresentation()
+        let timersSnapshot = timers
+        let drawingURL = self.drawingURL
+        let timersURL = self.timersURL
+        
+        // Use a DispatchGroup to track completion of both writes.
+        // endBackgroundTask fires only after all IO finishes — no assumptions
+        // about queue type or internal scheduling of saveDrawing/saveTimers.
+        let group = DispatchGroup()
+        
+        group.enter()
         ioQueue.async {
+            try? drawingData.write(to: drawingURL, options: .atomic)
+            group.leave()
+        }
+        
+        group.enter()
+        ioQueue.async {
+            if let encoded = try? JSONEncoder().encode(timersSnapshot) {
+                try? encoded.write(to: timersURL, options: .atomic)
+            }
+            group.leave()
+        }
+        
+        group.notify(queue: .global(qos: .utility)) {
             application.endBackgroundTask(bgTaskID)
         }
     }
