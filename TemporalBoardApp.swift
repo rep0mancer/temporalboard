@@ -1,6 +1,7 @@
 import SwiftUI
 import PencilKit
 import UserNotifications
+import Combine
 
 @main
 struct TemporalBoardApp: App {
@@ -50,6 +51,14 @@ class BoardViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Centralized Heartbeat
+    // A single Combine publisher that ticks once per second on the main RunLoop.
+    // All timer labels subscribe to this instead of running individual Timers.
+    let heartbeat: AnyPublisher<Date, Never> = Timer
+        .publish(every: 1, on: .main, in: .common)
+        .autoconnect()
+        .eraseToAnyPublisher()
+    
     /// Number of active (non-expired) timers.
     var activeTimerCount: Int {
         let now = Date()
@@ -73,10 +82,7 @@ class BoardViewModel: ObservableObject {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         drawingURL = docs.appendingPathComponent("drawing.data")
         timersURL = docs.appendingPathComponent("timers.json")
-        
-        isLoading = true
-        loadData()
-        isLoading = false
+        // Data loading is deferred to loadDataAsync() to avoid blocking the main thread.
     }
     
     func updateTimers(_ newTimers: [BoardTimer]) {
@@ -111,8 +117,24 @@ class BoardViewModel: ObservableObject {
     }
     
     func saveData() {
+        // Wrap the save in a background task so iOS keeps the process alive
+        // long enough for the IO to finish when the app is suspended.
+        let application = UIApplication.shared
+        var bgTaskID: UIBackgroundTaskIdentifier = .invalid
+        
+        bgTaskID = application.beginBackgroundTask(withName: "SaveBoardData") {
+            // Expiration handler — the OS is about to kill us, end the task.
+            application.endBackgroundTask(bgTaskID)
+            bgTaskID = .invalid
+        }
+        
         saveDrawing(immediately: true)
         saveTimers(immediately: true)
+        
+        // Since ioQueue is serial, this runs after both saves complete.
+        ioQueue.async {
+            application.endBackgroundTask(bgTaskID)
+        }
     }
     
     // MARK: - Persistence
@@ -157,15 +179,37 @@ class BoardViewModel: ObservableObject {
         }
     }
     
-    func loadData() {
-        if let data = try? Data(contentsOf: drawingURL),
-           let savedDrawing = try? PKDrawing(data: data) {
-            drawing = savedDrawing
-        }
+    /// Load persisted data off the main thread and apply it to the UI when ready.
+    /// Call this from a `.task` or `.onAppear` modifier — never from `init()`.
+    func loadDataAsync() {
+        isLoading = true
+        let drawingURL = self.drawingURL
+        let timersURL  = self.timersURL
         
-        if let data = try? Data(contentsOf: timersURL),
-           let savedTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
-            timers = savedTimers
+        ioQueue.async { [weak self] in
+            let loadedDrawing: PKDrawing? = {
+                guard let data = try? Data(contentsOf: drawingURL),
+                      let drawing = try? PKDrawing(data: data) else { return nil }
+                return drawing
+            }()
+            
+            let loadedTimers: [BoardTimer]? = {
+                guard let data = try? Data(contentsOf: timersURL),
+                      let timers = try? JSONDecoder().decode([BoardTimer].self, from: data) else { return nil }
+                return timers
+            }()
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // isLoading is still true, so didSet save guards are active.
+                if let drawing = loadedDrawing {
+                    self.drawing = drawing
+                }
+                if let timers = loadedTimers {
+                    self.timers = timers
+                }
+                self.isLoading = false
+            }
         }
     }
     
@@ -218,7 +262,8 @@ struct ContentView: View {
             CanvasView(
                 drawing: $viewModel.drawing,
                 timers: $viewModel.timers,
-                onAddTimers: viewModel.addTimers
+                onAddTimers: viewModel.addTimers,
+                heartbeat: viewModel.heartbeat
             )
             .edgesIgnoringSafeArea(.all)
             
@@ -237,6 +282,9 @@ struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
             }
+        }
+        .task {
+            viewModel.loadDataAsync()
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
