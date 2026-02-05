@@ -173,9 +173,12 @@ class BoardViewModel: ObservableObject {
     
     private func scheduleNotifications() {
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers:
-            timers.map { "timer-\($0.id.uuidString)" }
-        )
+        
+        // Remove ALL pending notification requests first, then re-schedule only
+        // the currently active timers. This ensures that notifications for deleted
+        // or cleared timers are always cleaned up (the previous approach only
+        // removed IDs still in the timers array, leaving stale requests behind).
+        center.removeAllPendingNotificationRequests()
         
         let now = Date()
         for timer in timers {

@@ -50,7 +50,12 @@ struct CanvasView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
-        if uiView.drawing.dataRepresentation() != drawing.dataRepresentation() {
+        // Avoid expensive full-data serialization comparison on every SwiftUI update.
+        // Use lightweight heuristics (stroke count + bounds) to detect actual changes.
+        let currentStrokes = uiView.drawing.strokes.count
+        let newStrokes = drawing.strokes.count
+        let boundsChanged = uiView.drawing.bounds != drawing.bounds
+        if currentStrokes != newStrokes || boundsChanged {
             uiView.drawing = drawing
         }
         context.coordinator.updateTimerViews(in: uiView, with: timers)
@@ -83,6 +88,14 @@ struct CanvasView: UIViewRepresentable {
         // Audio player for alert sound
         private var audioPlayer: AVAudioPlayer?
         
+        /// System sound ID for the tri-tone alert (avoids magic number).
+        private let triToneSoundID: SystemSoundID = 1007
+        
+        /// Pre-prepared haptic generators for responsive feedback.
+        private let lightImpactGenerator = UIImpactFeedbackGenerator(style: .light)
+        private let heavyImpactGenerator = UIImpactFeedbackGenerator(style: .heavy)
+        private let notificationGenerator = UINotificationFeedbackGenerator()
+        
         init(_ parent: CanvasView) {
             self.parent = parent
             super.init()
@@ -103,6 +116,11 @@ struct CanvasView: UIViewRepresentable {
             // Configure audio session
             try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
             try? AVAudioSession.sharedInstance().setActive(true)
+            
+            // Pre-warm haptic engines so feedback is immediate when triggered.
+            lightImpactGenerator.prepare()
+            heavyImpactGenerator.prepare()
+            notificationGenerator.prepare()
         }
         
         deinit {
@@ -163,7 +181,8 @@ struct CanvasView: UIViewRepresentable {
             
             let token = UUID()
             recognitionToken = token
-            let scale = UIScreen.main.scale
+            // Use the canvas view's own trait collection scale instead of deprecated UIScreen.main.scale
+            let scale = canvasView.traitCollection.displayScale > 0 ? canvasView.traitCollection.displayScale : 2.0
             let languages = recognitionLanguages()
             let allStrokes = drawing.strokes
             
@@ -263,9 +282,9 @@ struct CanvasView: UIViewRepresentable {
             if !newTimers.isEmpty {
                 parent.onAddTimers(newTimers)
                 
-                // Subtle haptic to confirm recognition
-                let generator = UIImpactFeedbackGenerator(style: .light)
-                generator.impactOccurred()
+                // Subtle haptic to confirm recognition (uses pre-warmed generator)
+                lightImpactGenerator.impactOccurred()
+                lightImpactGenerator.prepare() // Re-arm for next use
             }
         }
         
@@ -374,17 +393,17 @@ struct CanvasView: UIViewRepresentable {
             guard !hapticsTriggered.contains(timerID) else { return }
             hapticsTriggered.insert(timerID)
             
-            // Strong haptic pattern: warning + impact
-            let notificationGen = UINotificationFeedbackGenerator()
-            notificationGen.notificationOccurred(.warning)
+            // Strong haptic pattern: warning + impact (uses pre-warmed generators)
+            notificationGenerator.notificationOccurred(.warning)
+            notificationGenerator.prepare() // Re-arm for next use
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                let impactGen = UIImpactFeedbackGenerator(style: .heavy)
-                impactGen.impactOccurred()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.heavyImpactGenerator.impactOccurred()
+                self?.heavyImpactGenerator.prepare()
             }
             
             // Play system alert sound
-            AudioServicesPlaySystemSound(1007) // tri-tone alert
+            AudioServicesPlaySystemSound(triToneSoundID)
             
             // Mark expired in model
             DispatchQueue.main.async {
@@ -593,6 +612,13 @@ class DotGridBackgroundView: UIView {
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            setNeedsDisplay()
+        }
     }
     
     override func draw(_ rect: CGRect) {
@@ -812,16 +838,16 @@ class TimerLabel: UILabel {
         layer.cornerRadius = 8
         layer.borderWidth = 1
         layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
-        clipsToBounds = true
         textAlignment = .center
         isUserInteractionEnabled = true
         
-        // Subtle shadow
+        // Note: clipsToBounds must remain false so the shadow is visible.
+        // cornerRadius still clips the background via the layer.
+        clipsToBounds = false
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.06
         layer.shadowOffset = CGSize(width: 0, height: 1)
         layer.shadowRadius = 3
-        layer.masksToBounds = false
         
         updateDisplay()
     }
