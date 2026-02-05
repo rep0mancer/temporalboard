@@ -4,6 +4,7 @@ import PencilKit
 import Vision
 import AudioToolbox
 import AVFoundation
+import Combine
 
 // MARK: - CanvasView (UIViewRepresentable)
 
@@ -11,6 +12,7 @@ struct CanvasView: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     @Binding var timers: [BoardTimer]
     let onAddTimers: ([BoardTimer]) -> Void
+    let heartbeat: AnyPublisher<Date, Never>
     
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
@@ -45,6 +47,13 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.canvasView = canvasView
         context.coordinator.toolPicker = toolPicker
         context.coordinator.backgroundView = bgView
+        
+        // Subscribe the coordinator to the single centralized heartbeat.
+        // This replaces individual per-label Timers for energy efficiency.
+        context.coordinator.heartbeatCancellable = parent.heartbeat
+            .sink { [weak coordinator = context.coordinator] _ in
+                coordinator?.tickAllLabels()
+            }
         
         return canvasView
     }
@@ -81,6 +90,9 @@ struct CanvasView: UIViewRepresentable {
         // Timer display components
         var timerLabels: [UUID: TimerLabel] = [:]
         var highlightViews: [UUID: HighlightOverlayView] = [:]
+        
+        // Centralized heartbeat subscription (replaces per-label Timers)
+        var heartbeatCancellable: AnyCancellable?
         
         // Track which timers already triggered haptic & audio feedback
         var hapticsTriggered: Set<UUID> = []
@@ -314,7 +326,6 @@ struct CanvasView: UIViewRepresentable {
             
             // Remove views for deleted timers
             for id in timerLabels.keys where !currentIDs.contains(id) {
-                timerLabels[id]?.stopTimer()
                 timerLabels[id]?.removeFromSuperview()
                 timerLabels.removeValue(forKey: id)
             }
@@ -384,6 +395,16 @@ struct CanvasView: UIViewRepresentable {
                         highlightViews.removeValue(forKey: timer.id)
                     }
                 }
+            }
+        }
+        
+        // MARK: - Heartbeat Tick (Centralized)
+        
+        /// Called once per second by the single shared heartbeat.
+        /// Iterates all live timer labels and refreshes their countdown display.
+        func tickAllLabels() {
+            for label in timerLabels.values {
+                label.updateDisplay()
             }
         }
         
@@ -778,13 +799,11 @@ class TimerLabel: UILabel {
         didSet {
             expiredCallbackFired = false
             updateDisplay()
-            startTimerIfNeeded()
         }
     }
     
     var onExpired: ((UUID) -> Void)?
     
-    private var displayTimer: Timer?
     private var isBlinking = false
     private var expiredCallbackFired = false
     private var penColor: UIColor
@@ -795,15 +814,10 @@ class TimerLabel: UILabel {
         self.penColor = penColor
         super.init(frame: .zero)
         setupAppearance()
-        startTimer()
     }
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-    
-    deinit {
-        stopTimer()
     }
     
     func updatePenColor(_ color: UIColor) {
@@ -852,22 +866,9 @@ class TimerLabel: UILabel {
         updateDisplay()
     }
     
-    func startTimer() {
-        updateDisplay()
-        
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.updateDisplay()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        displayTimer = timer
-    }
-    
-    func stopTimer() {
-        displayTimer?.invalidate()
-        displayTimer = nil
-    }
-    
-    private func updateDisplay() {
+    /// Refresh the countdown text and styling.
+    /// Called every second by the Coordinator's centralized heartbeat — no per-label Timer needed.
+    func updateDisplay() {
         let now = Date()
         let remaining = targetDate.timeIntervalSince(now)
         
@@ -926,11 +927,6 @@ class TimerLabel: UILabel {
                 layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
             }
         }
-    }
-    
-    private func startTimerIfNeeded() {
-        guard displayTimer == nil else { return }
-        startTimer()
     }
     
     private func startBlinking() {
