@@ -18,6 +18,49 @@ class TimeParser {
         return cal
     }()
     
+    // MARK: - Pre-compiled Regex Patterns
+    // Compiled once and reused across all parsing calls to avoid repeated allocation.
+    
+    private static let compoundDurationRegex: NSRegularExpression = {
+        let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
+        let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
+        let pattern = #"(\d{1,3})\s*(?:"# + hourUnits + #")\s*(\d{1,3})\s*(?:"# + minuteUnits + #")"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let durationRegex: NSRegularExpression = {
+        let secondUnits = "s|sec|secs|second|seconds|sekunde|sekunden|sek"
+        let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
+        let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
+        let pattern = #"(?:^|\s|[^\d])(\d{1,4})\s*("# + secondUnits + "|" + minuteUnits + "|" + hourUnits + #")(?:\s|$|[^\w])"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let absoluteTimeAMPMRegex: NSRegularExpression = {
+        let pattern = #"(?:^|\s)(\d{1,2})[:\.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)(?:\s|$|[^\w])"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let absoluteTimeRegex: NSRegularExpression = {
+        let pattern = #"(?:^|\s)(\d{1,2})[:\.](\d{2})(?:\s|$|[^\w\d])"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let atTimeRegex: NSRegularExpression = {
+        let pattern = #"(?:^|\s)(?:at|@|um|à)\s+(\d{1,2})(?:[:\.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?:\s|$|[^\w])"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let bareHourAMPMRegex: NSRegularExpression = {
+        let pattern = #"(?:^|\s)(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)(?:\s|$|[^\w])"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
+    private static let dateRegex: NSRegularExpression = {
+        let pattern = #"(?:^|\s)(\d{1,2})[./](\d{1,2})(?:\s+(\d{1,2})[:\.](\d{2}))?(?:\s|$)"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
     // MARK: - Public API
     
     /// Parse the first recognized time expression found anywhere in the text.
@@ -75,15 +118,8 @@ class TimeParser {
     
     // MARK: - Compound Duration ("1h 30m", "1 hour 30 min", "2h30m")
     
-    private let compoundDurationPattern: String = {
-        let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
-        let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
-        // Matches: 1h 30m, 1h30m, 1 hour 30 minutes, etc.
-        return #"(\d{1,3})\s*(?:"# + hourUnits + #")\s*(\d{1,3})\s*(?:"# + minuteUnits + #")"#
-    }()
-    
     private func parseCompoundDuration(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: compoundDurationPattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.compoundDurationRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -106,13 +142,6 @@ class TimeParser {
     
     // MARK: - Simple Duration ("30 min", "2h", "45m", "1 stunde", "90s", "90 sec")
     
-    private let durationPattern: String = {
-        let secondUnits = "s|sec|secs|second|seconds|sekunde|sekunden|sek"
-        let minuteUnits = "m|min|mins|minute|minutes|minuto|minutos|minuti|minuten"
-        let hourUnits = "h|hr|hrs|hour|hours|hora|horas|heure|heures|ora|ore|stunde|stunden|std"
-        return #"(?:^|\s|[^\d])(\d{1,4})\s*("# + secondUnits + "|" + minuteUnits + "|" + hourUnits + #")(?:\s|$|[^\w])"#
-    }()
-    
     private static let hourUnitsSet: Set<String> = [
         "h", "hr", "hrs", "hour", "hours",
         "hora", "horas", "heure", "heures",
@@ -125,7 +154,7 @@ class TimeParser {
     ]
     
     private func parseDuration(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: durationPattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.durationRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -155,10 +184,8 @@ class TimeParser {
     
     // MARK: - Absolute Time with AM/PM ("2:30 PM", "11:00am", "2.30 pm")
     
-    private let absoluteTimeAMPMPattern = #"(?:^|\s)(\d{1,2})[:\.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)(?:\s|$|[^\w])"#
-    
     private func parseAbsoluteTimeAMPM(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: absoluteTimeAMPMPattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.absoluteTimeAMPMRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -199,10 +226,8 @@ class TimeParser {
     
     // MARK: - Absolute Time 24h ("14:30", "9:05", "9.05")
     
-    private let absoluteTimePattern = #"(?:^|\s)(\d{1,2})[:\.](\d{2})(?:\s|$|[^\w\d])"#
-    
     private func parseAbsoluteTime(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: absoluteTimePattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.absoluteTimeRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -233,10 +258,8 @@ class TimeParser {
     
     // MARK: - "at" prefixed time ("at 3", "at 15", "at 3pm", "at 3:30")
     
-    private let atTimePattern = #"(?:^|\s)(?:at|@|um|à)\s+(\d{1,2})(?:[:\.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?:\s|$|[^\w])"#
-    
     private func parseAtTime(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: atTimePattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.atTimeRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -289,10 +312,8 @@ class TimeParser {
     
     // MARK: - Bare hour with AM/PM ("3pm", "11am", "3 pm")
     
-    private let bareHourAMPMPattern = #"(?:^|\s)(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)(?:\s|$|[^\w])"#
-    
     private func parseBareHourAMPM(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: bareHourAMPMPattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.bareHourAMPMRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -329,10 +350,8 @@ class TimeParser {
     
     // MARK: - Date Expression ("03.02", "03.02 14:30", "3/2")
     
-    private let datePattern = #"(?:^|\s)(\d{1,2})[./](\d{1,2})(?:\s+(\d{1,2})[:\.](\d{2}))?(?:\s|$)"#
-    
     private func parseDateExpression(in text: String, now: Date) -> TimeParseResult? {
-        guard let regex = try? NSRegularExpression(pattern: datePattern, options: .caseInsensitive) else { return nil }
+        let regex = Self.dateRegex
         let nsRange = NSRange(text.startIndex..., in: text)
         
         guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
@@ -367,10 +386,14 @@ class TimeParser {
         }
         components.second = 0
         
-        guard let targetDate = calendar.date(from: components) else { return nil }
+        guard var targetDate = calendar.date(from: components) else { return nil }
         
+        // If the date is in the past, roll forward to the same date next year.
         if targetDate < now {
-            return nil
+            guard let year = components.year else { return nil }
+            components.year = year + 1
+            guard let nextYear = calendar.date(from: components) else { return nil }
+            targetDate = nextYear
         }
         
         let fullRange = dayRange.lowerBound..<endBound
@@ -378,34 +401,3 @@ class TimeParser {
     }
 }
 
-// MARK: - String Regex Extension
-
-extension String {
-    /// Matches the string against a regex pattern and returns captured groups.
-    func matches(for regex: String) -> [(String, String, String, String?, String?)]? {
-        do {
-            let regex = try NSRegularExpression(pattern: regex, options: .caseInsensitive)
-            let results = regex.matches(in: self, range: NSRange(self.startIndex..., in: self))
-            
-            return results.map { result in
-                let text = self
-                func stringForRange(_ range: NSRange) -> String? {
-                    guard range.location != NSNotFound,
-                          let swiftRange = Range(range, in: text) else {
-                        return nil
-                    }
-                    return String(text[swiftRange])
-                }
-                
-                let g1 = stringForRange(result.range(at: 1)) ?? ""
-                let g2 = stringForRange(result.range(at: 2)) ?? ""
-                let g3 = stringForRange(result.range(at: 3))
-                let g4 = stringForRange(result.range(at: 4))
-                let fullMatch = stringForRange(result.range(at: 0)) ?? ""
-                return (fullMatch, g1, g2, g3, g4)
-            }
-        } catch {
-            return nil
-        }
-    }
-}

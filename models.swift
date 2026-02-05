@@ -77,9 +77,18 @@ struct BoardTimer: Identifiable, Codable {
 // MARK: - UIColor Hex Helpers
 
 extension UIColor {
+    /// Creates a color from a hex string (e.g. "#FF0000" or "FF0000").
+    /// Falls back to `.label` if the string is malformed.
     convenience init(hex: String) {
         var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+        
+        // Validate that we have exactly 6 hex characters
+        guard hexSanitized.count == 6,
+              hexSanitized.allSatisfy({ $0.isHexDigit }) else {
+            self.init(cgColor: UIColor.label.cgColor)
+            return
+        }
         
         var rgb: UInt64 = 0
         Scanner(string: hexSanitized).scanHexInt64(&rgb)
@@ -91,9 +100,21 @@ extension UIColor {
         self.init(red: r, green: g, blue: b, alpha: 1.0)
     }
     
+    /// Returns a hex string representation of this color in sRGB space.
+    /// Converts from extended (Display P3) color spaces to avoid clamping issues.
     var hexString: String {
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        getRed(&r, green: &g, blue: &b, alpha: &a)
+        // Convert to sRGB to avoid issues with Display P3 or other wide-gamut colors.
+        guard let sRGB = cgColor.converted(to: CGColorSpaceCreateDeviceRGB(),
+                                           intent: .defaultIntent,
+                                           options: nil) else {
+            return "#000000"
+        }
+        
+        let components = sRGB.components ?? [0, 0, 0]
+        let r = max(0, min(1, components.count > 0 ? components[0] : 0))
+        let g = max(0, min(1, components.count > 1 ? components[1] : 0))
+        let b = max(0, min(1, components.count > 2 ? components[2] : 0))
+        
         return String(format: "#%02X%02X%02X",
                       Int(r * 255), Int(g * 255), Int(b * 255))
     }
