@@ -59,6 +59,11 @@ struct CanvasView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
+        // CanvasView is a value type — SwiftUI recreates it on every state change.
+        // The Coordinator persists across those recreations, so its `parent`
+        // reference must be refreshed here to avoid reading stale bindings.
+        context.coordinator.parent = self
+        
         // Avoid expensive full-data serialization comparison on every SwiftUI update.
         // Use lightweight heuristics (stroke count + bounds) to detect actual changes.
         let currentStrokes = uiView.drawing.strokes.count
