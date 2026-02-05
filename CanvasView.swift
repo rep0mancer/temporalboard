@@ -50,7 +50,7 @@ struct CanvasView: UIViewRepresentable {
         
         // Subscribe the coordinator to the single centralized heartbeat.
         // This replaces individual per-label Timers for energy efficiency.
-        context.coordinator.heartbeatCancellable = parent.heartbeat
+        context.coordinator.heartbeatCancellable = heartbeat
             .sink { [weak coordinator = context.coordinator] _ in
                 coordinator?.tickAllLabels()
             }
