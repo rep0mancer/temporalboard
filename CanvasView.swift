@@ -257,13 +257,26 @@ struct CanvasView: UIViewRepresentable {
         func processObservations(_ observations: [VNRecognizedTextObservation],
                                  in drawingBounds: CGRect,
                                  strokes: [PKStroke]) {
+            // ---------------------------------------------------------------
+            // Phase 1: Map ALL recognized text to canvas coordinates.
+            // We need every observation (not just time-parseable ones) so
+            // the zombie-detection pass can verify which timers still have
+            // underlying ink.
+            // ---------------------------------------------------------------
+            struct RecognizedText {
+                let text: String
+                let normalizedText: String
+                let centerX: CGFloat
+                let centerY: CGFloat
+                let textRect: CGRect
+            }
+            
+            var recognizedTexts: [RecognizedText] = []
             var newTimers: [BoardTimer] = []
             
             for observation in observations {
                 guard let candidate = observation.topCandidates(1).first else { continue }
                 let text = candidate.string
-                
-                guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
                 let boundingBox = observation.boundingBox
@@ -277,8 +290,18 @@ struct CanvasView: UIViewRepresentable {
                 let textRect = CGRect(x: x, y: y, width: rectWidth, height: rectHeight)
                 let centerX = x + rectWidth / 2
                 let centerY = y + rectHeight / 2
-                
                 let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                
+                recognizedTexts.append(RecognizedText(
+                    text: text,
+                    normalizedText: normalizedText,
+                    centerX: centerX,
+                    centerY: centerY,
+                    textRect: textRect
+                ))
+                
+                // Only create timers from parseable time expressions
+                guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
                 
                 // Avoid duplicates
                 let alreadyExists = parent.timers.contains { existing in
@@ -306,6 +329,50 @@ struct CanvasView: UIViewRepresentable {
                 }
             }
             
+            // ---------------------------------------------------------------
+            // Phase 2: Deletion Sync — purge "zombie" timers.
+            // If the user erases the ink hidden under a timer label, the
+            // Vision scan will no longer report that text.  Any existing
+            // timer whose anchor falls inside the scan area but whose
+            // original text is NOT found nearby in the observations is a
+            // zombie and should be removed.
+            // ---------------------------------------------------------------
+            let scanArea = drawingBounds
+            var zombieIDs: Set<UUID> = []
+            
+            for timer in parent.timers {
+                let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                
+                // Only consider timers whose anchor is inside the scanned region.
+                guard scanArea.contains(anchor) else { continue }
+                
+                let timerText = timer.originalText
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                
+                // Check if any observation still matches this timer by both
+                // proximity (~50 px radius) AND text content.
+                let stillPresent = recognizedTexts.contains { recognized in
+                    let dx = timer.anchorX - recognized.centerX
+                    let dy = timer.anchorY - recognized.centerY
+                    let closeEnough = (dx * dx + dy * dy) < 2500
+                    let textMatch = timerText == recognized.normalizedText
+                        || timerText.contains(recognized.normalizedText)
+                        || recognized.normalizedText.contains(timerText)
+                    return closeEnough && textMatch
+                }
+                
+                if !stillPresent {
+                    zombieIDs.insert(timer.id)
+                }
+            }
+            
+            if !zombieIDs.isEmpty {
+                parent.timers.removeAll { zombieIDs.contains($0.id) }
+            }
+            
+            // ---------------------------------------------------------------
+            // Phase 3: Add newly discovered timers.
+            // ---------------------------------------------------------------
             if !newTimers.isEmpty {
                 parent.onAddTimers(newTimers)
                 
