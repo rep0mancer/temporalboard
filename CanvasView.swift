@@ -383,18 +383,120 @@ struct CanvasView: UIViewRepresentable {
             }
             
             // ---------------------------------------------------------------
+            // Phase 1.5: Migration — detect lasso-moved timers.
+            // When the user moves ink with the PencilKit lasso tool, the
+            // recognized text reappears at a new location.  Without this
+            // phase, Phase 2 would delete the "missing" timer and Phase 3
+            // would create a fresh one — destroying the countdown state.
+            // Instead, we detect the move and update the timer's
+            // coordinates in-place so the countdown is preserved.
+            //
+            // Only performed during a full scan (same guard as Phase 2).
+            // ---------------------------------------------------------------
+            var migratedTimerIDs: Set<UUID> = []
+            
+            if isFullScan {
+                let scanArea = scanRect
+                
+                // Track which recognized-text indices have been claimed by a
+                // migration so each observation is consumed at most once.
+                var claimedRecognizedIndices: Set<Int> = []
+                
+                for (timerIdx, timer) in parent.timers.enumerated() {
+                    let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                    guard scanArea.contains(anchor) else { continue }
+                    
+                    let timerText = timer.originalText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    
+                    // Is the timer still at its original location?
+                    let stillPresent = recognizedTexts.contains { recognized in
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let closeEnough = (dx * dx + dy * dy) < 2500
+                        let textMatch = timerText == recognized.normalizedText
+                            || timerText.contains(recognized.normalizedText)
+                            || recognized.normalizedText.contains(timerText)
+                        return closeEnough && textMatch
+                    }
+                    
+                    // Timer is still where we expect — nothing to migrate.
+                    if stillPresent { continue }
+                    
+                    // Timer text is no longer at its anchor.  Search the
+                    // recognized texts for an exact match at a *different*
+                    // location (≥ 50 pt away) — this indicates a lasso move.
+                    var bestMatchIdx: Int?
+                    var bestDistanceSq: CGFloat = .greatestFiniteMagnitude
+                    
+                    for (idx, recognized) in recognizedTexts.enumerated() {
+                        guard !claimedRecognizedIndices.contains(idx) else { continue }
+                        
+                        // Require an exact normalized-text match.
+                        guard timerText == recognized.normalizedText else { continue }
+                        
+                        // Must be away from the original anchor (the nearby
+                        // case was already handled by the stillPresent check).
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let distSq = dx * dx + dy * dy
+                        guard distSq >= 2500 else { continue }
+                        
+                        // If multiple identical texts exist, pick the closest.
+                        if distSq < bestDistanceSq {
+                            bestDistanceSq = distSq
+                            bestMatchIdx = idx
+                        }
+                    }
+                    
+                    if let matchIdx = bestMatchIdx {
+                        let matched = recognizedTexts[matchIdx]
+                        
+                        // Migrate: update coordinates in-place, preserving
+                        // the countdown, expiration state, and all metadata.
+                        parent.timers[timerIdx].anchorX = matched.centerX
+                        parent.timers[timerIdx].anchorY = matched.centerY
+                        parent.timers[timerIdx].textRect = matched.textRect
+                        
+                        claimedRecognizedIndices.insert(matchIdx)
+                        migratedTimerIDs.insert(timer.id)
+                    }
+                }
+                
+                // Remove from newTimers any entries that overlap with a
+                // migrated timer's new position — the existing timer already
+                // covers that location and we must not create a duplicate.
+                if !migratedTimerIDs.isEmpty {
+                    newTimers.removeAll { candidate in
+                        parent.timers.contains { existing in
+                            guard migratedTimerIDs.contains(existing.id) else { return false }
+                            let dx = existing.anchorX - candidate.anchorX
+                            let dy = existing.anchorY - candidate.anchorY
+                            return (dx * dx + dy * dy) < 2500
+                        }
+                    }
+                }
+            }
+            
+            // ---------------------------------------------------------------
             // Phase 2: Deletion Sync — purge "zombie" timers.
             // Only performed during a full scan (e.g. after erasing strokes
             // or the very first recognition pass). During a partial dirty-rect
             // scan we intentionally skip this: timers outside the dirty rect
             // would never appear in the observations and would be falsely
             // classified as zombies.
+            //
+            // Timers that were migrated in Phase 1.5 are excluded — their
+            // anchors have already been updated to the new location.
             // ---------------------------------------------------------------
             if isFullScan {
                 let scanArea = scanRect
                 var zombieIDs: Set<UUID> = []
                 
                 for timer in parent.timers {
+                    // Skip timers that were just migrated.
+                    guard !migratedTimerIDs.contains(timer.id) else { continue }
+                    
                     let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
                     
                     // Only consider timers whose anchor is inside the scanned region.
