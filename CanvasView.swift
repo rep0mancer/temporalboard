@@ -55,6 +55,16 @@ struct CanvasView: UIViewRepresentable {
                 coordinator?.tickAllLabels()
             }
         
+        // Canvas-level tap gesture for timer interaction.
+        // Labels are non-interactive (isUserInteractionEnabled = false) so we
+        // hit-test manually against their frames in the Coordinator.
+        let canvasTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleCanvasTap(_:))
+        )
+        canvasTap.delegate = context.coordinator
+        canvasView.addGestureRecognizer(canvasTap)
+        
         return canvasView
     }
     
@@ -81,7 +91,7 @@ struct CanvasView: UIViewRepresentable {
     
     // MARK: - Coordinator
     
-    class Coordinator: NSObject, PKCanvasViewDelegate {
+    class Coordinator: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegate {
         var parent: CanvasView
         var recognitionWorkItem: DispatchWorkItem?
         var saveWorkItem: DispatchWorkItem?
@@ -247,13 +257,26 @@ struct CanvasView: UIViewRepresentable {
         func processObservations(_ observations: [VNRecognizedTextObservation],
                                  in drawingBounds: CGRect,
                                  strokes: [PKStroke]) {
+            // ---------------------------------------------------------------
+            // Phase 1: Map ALL recognized text to canvas coordinates.
+            // We need every observation (not just time-parseable ones) so
+            // the zombie-detection pass can verify which timers still have
+            // underlying ink.
+            // ---------------------------------------------------------------
+            struct RecognizedText {
+                let text: String
+                let normalizedText: String
+                let centerX: CGFloat
+                let centerY: CGFloat
+                let textRect: CGRect
+            }
+            
+            var recognizedTexts: [RecognizedText] = []
             var newTimers: [BoardTimer] = []
             
             for observation in observations {
                 guard let candidate = observation.topCandidates(1).first else { continue }
                 let text = candidate.string
-                
-                guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
                 let boundingBox = observation.boundingBox
@@ -267,8 +290,18 @@ struct CanvasView: UIViewRepresentable {
                 let textRect = CGRect(x: x, y: y, width: rectWidth, height: rectHeight)
                 let centerX = x + rectWidth / 2
                 let centerY = y + rectHeight / 2
-                
                 let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                
+                recognizedTexts.append(RecognizedText(
+                    text: text,
+                    normalizedText: normalizedText,
+                    centerX: centerX,
+                    centerY: centerY,
+                    textRect: textRect
+                ))
+                
+                // Only create timers from parseable time expressions
+                guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
                 
                 // Avoid duplicates
                 let alreadyExists = parent.timers.contains { existing in
@@ -296,6 +329,50 @@ struct CanvasView: UIViewRepresentable {
                 }
             }
             
+            // ---------------------------------------------------------------
+            // Phase 2: Deletion Sync — purge "zombie" timers.
+            // If the user erases the ink hidden under a timer label, the
+            // Vision scan will no longer report that text.  Any existing
+            // timer whose anchor falls inside the scan area but whose
+            // original text is NOT found nearby in the observations is a
+            // zombie and should be removed.
+            // ---------------------------------------------------------------
+            let scanArea = drawingBounds
+            var zombieIDs: Set<UUID> = []
+            
+            for timer in parent.timers {
+                let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                
+                // Only consider timers whose anchor is inside the scanned region.
+                guard scanArea.contains(anchor) else { continue }
+                
+                let timerText = timer.originalText
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                
+                // Check if any observation still matches this timer by both
+                // proximity (~50 px radius) AND text content.
+                let stillPresent = recognizedTexts.contains { recognized in
+                    let dx = timer.anchorX - recognized.centerX
+                    let dy = timer.anchorY - recognized.centerY
+                    let closeEnough = (dx * dx + dy * dy) < 2500
+                    let textMatch = timerText == recognized.normalizedText
+                        || timerText.contains(recognized.normalizedText)
+                        || recognized.normalizedText.contains(timerText)
+                    return closeEnough && textMatch
+                }
+                
+                if !stillPresent {
+                    zombieIDs.insert(timer.id)
+                }
+            }
+            
+            if !zombieIDs.isEmpty {
+                parent.timers.removeAll { zombieIDs.contains($0.id) }
+            }
+            
+            // ---------------------------------------------------------------
+            // Phase 3: Add newly discovered timers.
+            // ---------------------------------------------------------------
             if !newTimers.isEmpty {
                 parent.onAddTimers(newTimers)
                 
@@ -356,9 +433,6 @@ struct CanvasView: UIViewRepresentable {
                     label.onExpired = { [weak self] timerID in
                         self?.handleTimerExpired(timerID: timerID)
                     }
-                    label.addGestureRecognizer(UITapGestureRecognizer(
-                        target: self, action: #selector(handleTimerLabelTap(_:))
-                    ))
                     canvasView.addSubview(label)
                     timerLabels[timer.id] = label
                     
@@ -371,11 +445,29 @@ struct CanvasView: UIViewRepresentable {
                     }
                 }
                 
-                // Position below the text
-                let labelWidth: CGFloat = max(100, timer.textRect.width * 0.5)
-                let contentX = timer.anchorX - labelWidth / 2
-                let contentY = timer.anchorY + max(timer.textRect.height / 2, 10) + 6
-                label.frame = CGRect(x: contentX, y: contentY, width: labelWidth, height: 30)
+                // Center the label directly over the handwriting to mask/replace it.
+                // The frame must fully cover the original textRect bounding box.
+                if timer.textRect != .zero {
+                    let padding: CGFloat = 4
+                    let labelWidth  = max(timer.textRect.width  + padding * 2, 80)
+                    let labelHeight = max(timer.textRect.height + padding * 2, 30)
+                    label.frame = CGRect(
+                        x: timer.textRect.midX - labelWidth  / 2,
+                        y: timer.textRect.midY - labelHeight / 2,
+                        width:  labelWidth,
+                        height: labelHeight
+                    )
+                } else {
+                    // Fallback when textRect is unavailable — center on anchor point
+                    let labelWidth: CGFloat = 100
+                    let labelHeight: CGFloat = 30
+                    label.frame = CGRect(
+                        x: timer.anchorX - labelWidth  / 2,
+                        y: timer.anchorY - labelHeight / 2,
+                        width:  labelWidth,
+                        height: labelHeight
+                    )
+                }
                 
                 // --- Highlight Overlay ---
                 let isExpiredNow = timer.targetDate <= Date()
@@ -439,13 +531,33 @@ struct CanvasView: UIViewRepresentable {
             }
         }
         
-        // MARK: - Timer Interaction (Tap)
+        // MARK: - Timer Interaction (Canvas-level Tap)
         
-        @objc private func handleTimerLabelTap(_ gesture: UITapGestureRecognizer) {
-            guard let label = gesture.view as? TimerLabel else { return }
-            let timerID = label.timerID
-            guard let timer = parent.timers.first(where: { $0.id == timerID }) else { return }
-            presentTimerActionSheet(for: timer)
+        /// Hit-test the tap location against all timer label frames.
+        /// Since labels have isUserInteractionEnabled = false, we handle
+        /// interaction at the canvas level instead.
+        @objc func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
+            guard let canvasView = canvasView else { return }
+            let tapLocation = gesture.location(in: canvasView)
+            
+            for (timerID, label) in timerLabels {
+                if label.frame.contains(tapLocation) {
+                    guard let timer = parent.timers.first(where: { $0.id == timerID }) else { continue }
+                    presentTimerActionSheet(for: timer)
+                    return
+                }
+            }
+        }
+        
+        // MARK: - UIGestureRecognizerDelegate
+        
+        /// Allow the canvas tap to coexist with PencilKit's own gesture
+        /// recognizers so drawing and scrolling are never blocked.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            return true
         }
         
         private func presentTimerActionSheet(for timer: BoardTimer) {
@@ -813,11 +925,20 @@ class TimerLabel: UILabel {
     private var expiredCallbackFired = false
     private var penColor: UIColor
     
+    /// Canvas background color used to mask the handwriting underneath.
+    private static let canvasBackgroundColor: UIColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+            : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
+    }
+    
     init(timerID: UUID, targetDate: Date, penColor: UIColor = .label) {
         self.timerID = timerID
         self.targetDate = targetDate
         self.penColor = penColor
         super.init(frame: .zero)
+        // CRITICAL: Never block Pencil or Eraser tools.
+        self.isUserInteractionEnabled = false
         setupAppearance()
     }
     
@@ -827,46 +948,31 @@ class TimerLabel: UILabel {
     
     func updatePenColor(_ color: UIColor) {
         penColor = color
-        if targetDate.timeIntervalSince(Date()) > 60 {
-            layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+        // Refresh text color to match the new pen color (unless in expired/urgent state).
+        let remaining = targetDate.timeIntervalSince(Date())
+        if remaining > 300 {
+            textColor = penColor
         }
-    }
-    
-    private func adaptiveAccent() -> UIColor {
-        // Use pen color if it's visible enough, otherwise use system tint
-        var hue: CGFloat = 0, sat: CGFloat = 0, bri: CGFloat = 0, alp: CGFloat = 0
-        penColor.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
-        return sat > 0.15 ? penColor : .systemBlue
     }
     
     private func setupAppearance() {
-        let size: CGFloat = 13
-        if let descriptor = UIFontDescriptor
-            .preferredFontDescriptor(withTextStyle: .caption1)
-            .withDesign(.monospaced)?
-            .withSymbolicTraits(.traitBold) {
-            font = UIFont(descriptor: descriptor, size: size)
-        } else {
-            font = .monospacedDigitSystemFont(ofSize: size, weight: .semibold)
-        }
+        // Handwriting-style font to blend with the canvas aesthetic
+        font = UIFont(name: "Noteworthy-Bold", size: 20)
+            ?? .systemFont(ofSize: 20, weight: .bold)
         
-        textColor = adaptiveAccent()
+        // Match pen color so the countdown reads like the user's own writing
+        textColor = penColor
         
-        // Frosted glass pill appearance
-        backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
-        layer.cornerRadius = 8
-        layer.borderWidth = 1
-        layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+        // Canvas-matching background masks the ink underneath
+        backgroundColor = Self.canvasBackgroundColor
+        
+        layer.cornerRadius = 4
+        layer.borderWidth = 0
         textAlignment = .center
-        isUserInteractionEnabled = true
+        clipsToBounds = true
         
-        // Note: clipsToBounds must remain false so the shadow is visible.
-        // cornerRadius still clips the background via the layer.
-        clipsToBounds = false
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.06
-        layer.shadowOffset = CGSize(width: 0, height: 1)
-        layer.shadowRadius = 3
+        // No shadow or border — the label should look like replaced handwriting
+        layer.shadowOpacity = 0
         
         updateDisplay()
     }
@@ -876,6 +982,9 @@ class TimerLabel: UILabel {
     func updateDisplay() {
         let now = Date()
         let remaining = targetDate.timeIntervalSince(now)
+        
+        // Background always matches the canvas to mask the handwriting underneath.
+        backgroundColor = Self.canvasBackgroundColor
         
         if remaining <= 0 {
             // Overtime display
@@ -892,8 +1001,6 @@ class TimerLabel: UILabel {
             }
             
             textColor = .systemRed
-            backgroundColor = UIColor.systemRed.withAlphaComponent(0.08)
-            layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
             startBlinking()
             
             if !expiredCallbackFired {
@@ -903,7 +1010,6 @@ class TimerLabel: UILabel {
         } else {
             stopBlinking()
             alpha = 1.0
-            backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
             
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
@@ -915,21 +1021,15 @@ class TimerLabel: UILabel {
                 text = " \(String(format: "%02d:%02d", m, s)) "
             }
             
-            // Color transitions based on urgency
+            // Text color transitions based on urgency
             if remaining < 30 {
                 textColor = .systemRed
-                layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
-                backgroundColor = UIColor.systemRed.withAlphaComponent(0.05)
             } else if remaining < 60 {
                 textColor = .systemOrange
-                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.4).cgColor
-                backgroundColor = UIColor.systemOrange.withAlphaComponent(0.05)
             } else if remaining < 300 {
                 textColor = .systemYellow.blended(with: .systemOrange)
-                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.25).cgColor
             } else {
-                textColor = adaptiveAccent()
-                layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+                textColor = penColor
             }
         }
     }
