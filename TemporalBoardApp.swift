@@ -396,7 +396,10 @@ class BoardViewModel: ObservableObject {
 struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showOnboarding = true
+    @State private var showHint = true
+    
+    /// Persisted flag — `false` until the user has seen the welcome sheet.
+    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
     
     var body: some View {
         ZStack {
@@ -417,13 +420,23 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // Onboarding hint for empty boards
-                if viewModel.timers.isEmpty && showOnboarding {
+                // Persistent onboarding hint for empty boards (always available,
+                // independent of the first-launch welcome sheet).
+                if viewModel.timers.isEmpty && showHint {
                     onboardingHint
                         .padding(.bottom, 120)
                         .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
             }
+        }
+        .sheet(isPresented: Binding(
+            get: { !hasSeenOnboarding },
+            set: { newValue in
+                if !newValue { hasSeenOnboarding = true }
+            }
+        )) {
+            OnboardingView(hasSeenOnboarding: $hasSeenOnboarding)
+                .interactiveDismissDisabled()
         }
         .task {
             viewModel.loadDataAsync()
@@ -436,7 +449,7 @@ struct ContentView: View {
         .onChange(of: viewModel.timers) { _ in
             if !viewModel.timers.isEmpty {
                 withAnimation(.easeOut(duration: 0.4)) {
-                    showOnboarding = false
+                    showHint = false
                 }
             }
         }
