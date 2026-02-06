@@ -371,11 +371,29 @@ struct CanvasView: UIViewRepresentable {
                     }
                 }
                 
-                // Position below the text
-                let labelWidth: CGFloat = max(100, timer.textRect.width * 0.5)
-                let contentX = timer.anchorX - labelWidth / 2
-                let contentY = timer.anchorY + max(timer.textRect.height / 2, 10) + 6
-                label.frame = CGRect(x: contentX, y: contentY, width: labelWidth, height: 30)
+                // Center the label directly over the handwriting to mask/replace it.
+                // The frame must fully cover the original textRect bounding box.
+                if timer.textRect != .zero {
+                    let padding: CGFloat = 4
+                    let labelWidth  = max(timer.textRect.width  + padding * 2, 80)
+                    let labelHeight = max(timer.textRect.height + padding * 2, 30)
+                    label.frame = CGRect(
+                        x: timer.textRect.midX - labelWidth  / 2,
+                        y: timer.textRect.midY - labelHeight / 2,
+                        width:  labelWidth,
+                        height: labelHeight
+                    )
+                } else {
+                    // Fallback when textRect is unavailable — center on anchor point
+                    let labelWidth: CGFloat = 100
+                    let labelHeight: CGFloat = 30
+                    label.frame = CGRect(
+                        x: timer.anchorX - labelWidth  / 2,
+                        y: timer.anchorY - labelHeight / 2,
+                        width:  labelWidth,
+                        height: labelHeight
+                    )
+                }
                 
                 // --- Highlight Overlay ---
                 let isExpiredNow = timer.targetDate <= Date()
@@ -813,11 +831,20 @@ class TimerLabel: UILabel {
     private var expiredCallbackFired = false
     private var penColor: UIColor
     
+    /// Canvas background color used to mask the handwriting underneath.
+    private static let canvasBackgroundColor: UIColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+            : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
+    }
+    
     init(timerID: UUID, targetDate: Date, penColor: UIColor = .label) {
         self.timerID = timerID
         self.targetDate = targetDate
         self.penColor = penColor
         super.init(frame: .zero)
+        // CRITICAL: Never block Pencil or Eraser tools.
+        self.isUserInteractionEnabled = false
         setupAppearance()
     }
     
@@ -827,46 +854,31 @@ class TimerLabel: UILabel {
     
     func updatePenColor(_ color: UIColor) {
         penColor = color
-        if targetDate.timeIntervalSince(Date()) > 60 {
-            layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+        // Refresh text color to match the new pen color (unless in expired/urgent state).
+        let remaining = targetDate.timeIntervalSince(Date())
+        if remaining > 300 {
+            textColor = penColor
         }
-    }
-    
-    private func adaptiveAccent() -> UIColor {
-        // Use pen color if it's visible enough, otherwise use system tint
-        var hue: CGFloat = 0, sat: CGFloat = 0, bri: CGFloat = 0, alp: CGFloat = 0
-        penColor.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alp)
-        return sat > 0.15 ? penColor : .systemBlue
     }
     
     private func setupAppearance() {
-        let size: CGFloat = 13
-        if let descriptor = UIFontDescriptor
-            .preferredFontDescriptor(withTextStyle: .caption1)
-            .withDesign(.monospaced)?
-            .withSymbolicTraits(.traitBold) {
-            font = UIFont(descriptor: descriptor, size: size)
-        } else {
-            font = .monospacedDigitSystemFont(ofSize: size, weight: .semibold)
-        }
+        // Handwriting-style font to blend with the canvas aesthetic
+        font = UIFont(name: "Noteworthy-Bold", size: 20)
+            ?? .systemFont(ofSize: 20, weight: .bold)
         
-        textColor = adaptiveAccent()
+        // Match pen color so the countdown reads like the user's own writing
+        textColor = penColor
         
-        // Frosted glass pill appearance
-        backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
-        layer.cornerRadius = 8
-        layer.borderWidth = 1
-        layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+        // Canvas-matching background masks the ink underneath
+        backgroundColor = Self.canvasBackgroundColor
+        
+        layer.cornerRadius = 4
+        layer.borderWidth = 0
         textAlignment = .center
-        isUserInteractionEnabled = true
+        clipsToBounds = true
         
-        // Note: clipsToBounds must remain false so the shadow is visible.
-        // cornerRadius still clips the background via the layer.
-        clipsToBounds = false
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.06
-        layer.shadowOffset = CGSize(width: 0, height: 1)
-        layer.shadowRadius = 3
+        // No shadow or border — the label should look like replaced handwriting
+        layer.shadowOpacity = 0
         
         updateDisplay()
     }
@@ -876,6 +888,9 @@ class TimerLabel: UILabel {
     func updateDisplay() {
         let now = Date()
         let remaining = targetDate.timeIntervalSince(now)
+        
+        // Background always matches the canvas to mask the handwriting underneath.
+        backgroundColor = Self.canvasBackgroundColor
         
         if remaining <= 0 {
             // Overtime display
@@ -892,8 +907,6 @@ class TimerLabel: UILabel {
             }
             
             textColor = .systemRed
-            backgroundColor = UIColor.systemRed.withAlphaComponent(0.08)
-            layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
             startBlinking()
             
             if !expiredCallbackFired {
@@ -903,7 +916,6 @@ class TimerLabel: UILabel {
         } else {
             stopBlinking()
             alpha = 1.0
-            backgroundColor = UIColor.systemBackground.withAlphaComponent(0.88)
             
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
@@ -915,21 +927,15 @@ class TimerLabel: UILabel {
                 text = " \(String(format: "%02d:%02d", m, s)) "
             }
             
-            // Color transitions based on urgency
+            // Text color transitions based on urgency
             if remaining < 30 {
                 textColor = .systemRed
-                layer.borderColor = UIColor.systemRed.withAlphaComponent(0.4).cgColor
-                backgroundColor = UIColor.systemRed.withAlphaComponent(0.05)
             } else if remaining < 60 {
                 textColor = .systemOrange
-                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.4).cgColor
-                backgroundColor = UIColor.systemOrange.withAlphaComponent(0.05)
             } else if remaining < 300 {
                 textColor = .systemYellow.blended(with: .systemOrange)
-                layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.25).cgColor
             } else {
-                textColor = adaptiveAccent()
-                layer.borderColor = adaptiveAccent().withAlphaComponent(0.3).cgColor
+                textColor = penColor
             }
         }
     }
