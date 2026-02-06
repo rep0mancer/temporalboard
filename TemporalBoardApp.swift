@@ -103,9 +103,10 @@ class BoardViewModel: ObservableObject {
     private var suppressCloudPush = false
     /// Timestamp of the last local user-initiated modification.
     /// Persisted in UserDefaults so it survives app relaunches.
+    private static let lastLocalChangeDateKey = "tb_lastLocalChangeDate"
     private var lastLocalChangeDate: Date {
-        get { UserDefaults.standard.object(forKey: "tb_lastLocalChangeDate") as? Date ?? .distantPast }
-        set { UserDefaults.standard.set(newValue, forKey: "tb_lastLocalChangeDate") }
+        get { UserDefaults.standard.object(forKey: Self.lastLocalChangeDateKey) as? Date ?? .distantPast }
+        set { UserDefaults.standard.set(newValue, forKey: Self.lastLocalChangeDateKey) }
     }
     
     init() {
