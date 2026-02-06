@@ -88,11 +88,25 @@ final class CloudKitManager {
         
         // Fetch the existing record first so we carry the server change tag
         // and avoid "server record changed" conflicts on save.
-        privateDB.fetch(withRecordID: recordID) { [weak self] existing, _ in
+        privateDB.fetch(withRecordID: recordID) { [weak self] existing, fetchError in
             guard let self = self else { completion(false); return }
             
-            let record = existing
-                ?? CKRecord(recordType: self.recordType, recordID: self.recordID)
+            let record: CKRecord
+            if let existing = existing {
+                record = existing
+            } else if let ckError = fetchError as? CKError,
+                      ckError.code == .unknownItem {
+                // Record doesn't exist yet — create a fresh one.
+                record = CKRecord(recordType: self.recordType, recordID: self.recordID)
+            } else if let fetchError = fetchError {
+                // Any other fetch error (network, auth, quota, etc.) —
+                // fail early instead of masking the root cause.
+                print("[CloudKit] Pre-save fetch failed: \(fetchError.localizedDescription)")
+                completion(false)
+                return
+            } else {
+                record = CKRecord(recordType: self.recordType, recordID: self.recordID)
+            }
             
             // Drawing → CKAsset via a temporary file.
             let tempURL = FileManager.default.temporaryDirectory

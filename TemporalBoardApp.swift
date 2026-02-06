@@ -324,6 +324,12 @@ class BoardViewModel: ObservableObject {
                   cloudDate > self.lastLocalChangeDate else { return }
             
             DispatchQueue.main.async {
+                // Cancel any pending debounced cloud push.  Without this,
+                // a local change made while the fetch was in flight could
+                // overwrite the newer cloud data we're about to apply.
+                self.cloudSaveWorkItem?.cancel()
+                self.cloudSaveWorkItem = nil
+                
                 // suppressCloudPush prevents the incoming data from being
                 // echoed back to iCloud.  Local saves still happen so the
                 // on-disk cache stays fresh.
@@ -337,6 +343,12 @@ class BoardViewModel: ObservableObject {
                    let cloudTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
                     self.timers = cloudTimers
                 }
+                
+                // Advance the local timestamp to the cloud's value so that
+                // the state we now hold is correctly baselined.  Future
+                // local edits will set a newer date, and subsequent pulls
+                // won't re-apply this same snapshot.
+                self.lastLocalChangeDate = cloudDate
                 
                 self.suppressCloudPush = false
             }
