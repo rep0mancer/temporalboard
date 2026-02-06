@@ -55,6 +55,16 @@ struct CanvasView: UIViewRepresentable {
                 coordinator?.tickAllLabels()
             }
         
+        // Canvas-level tap gesture for timer interaction.
+        // Labels are non-interactive (isUserInteractionEnabled = false) so we
+        // hit-test manually against their frames in the Coordinator.
+        let canvasTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleCanvasTap(_:))
+        )
+        canvasTap.delegate = context.coordinator
+        canvasView.addGestureRecognizer(canvasTap)
+        
         return canvasView
     }
     
@@ -81,7 +91,7 @@ struct CanvasView: UIViewRepresentable {
     
     // MARK: - Coordinator
     
-    class Coordinator: NSObject, PKCanvasViewDelegate {
+    class Coordinator: NSObject, PKCanvasViewDelegate, UIGestureRecognizerDelegate {
         var parent: CanvasView
         var recognitionWorkItem: DispatchWorkItem?
         var saveWorkItem: DispatchWorkItem?
@@ -356,9 +366,6 @@ struct CanvasView: UIViewRepresentable {
                     label.onExpired = { [weak self] timerID in
                         self?.handleTimerExpired(timerID: timerID)
                     }
-                    label.addGestureRecognizer(UITapGestureRecognizer(
-                        target: self, action: #selector(handleTimerLabelTap(_:))
-                    ))
                     canvasView.addSubview(label)
                     timerLabels[timer.id] = label
                     
@@ -457,13 +464,33 @@ struct CanvasView: UIViewRepresentable {
             }
         }
         
-        // MARK: - Timer Interaction (Tap)
+        // MARK: - Timer Interaction (Canvas-level Tap)
         
-        @objc private func handleTimerLabelTap(_ gesture: UITapGestureRecognizer) {
-            guard let label = gesture.view as? TimerLabel else { return }
-            let timerID = label.timerID
-            guard let timer = parent.timers.first(where: { $0.id == timerID }) else { return }
-            presentTimerActionSheet(for: timer)
+        /// Hit-test the tap location against all timer label frames.
+        /// Since labels have isUserInteractionEnabled = false, we handle
+        /// interaction at the canvas level instead.
+        @objc func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
+            guard let canvasView = canvasView else { return }
+            let tapLocation = gesture.location(in: canvasView)
+            
+            for (timerID, label) in timerLabels {
+                if label.frame.contains(tapLocation) {
+                    guard let timer = parent.timers.first(where: { $0.id == timerID }) else { continue }
+                    presentTimerActionSheet(for: timer)
+                    return
+                }
+            }
+        }
+        
+        // MARK: - UIGestureRecognizerDelegate
+        
+        /// Allow the canvas tap to coexist with PencilKit's own gesture
+        /// recognizers so drawing and scrolling are never blocked.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            return true
         }
         
         private func presentTimerActionSheet(for timer: BoardTimer) {
