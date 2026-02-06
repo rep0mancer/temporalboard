@@ -68,13 +68,13 @@ struct OnboardingView: View {
                 .foregroundStyle(.tint)
                 .symbolRenderingMode(.hierarchical)
             
-            Text("Welcome to")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
-            +
-            Text("\nTemporalBoard")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(.tint)
+            VStack(spacing: 0) {
+                Text("Welcome to")
+                    .foregroundStyle(.primary)
+                Text("TemporalBoard")
+                    .foregroundStyle(.tint)
+            }
+            .font(.system(size: 34, weight: .bold, design: .rounded))
         }
         .multilineTextAlignment(.center)
         .padding(.horizontal, 32)
