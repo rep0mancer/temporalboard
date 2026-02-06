@@ -112,6 +112,11 @@ struct CanvasView: UIViewRepresentable {
         // Track which timers already triggered haptic & audio feedback
         var hapticsTriggered: Set<UUID> = []
         
+        // Dirty-rect tracking: stroke count at last recognition pass.
+        // Used to determine which strokes are "new" so we only rasterize
+        // the changed region instead of the entire canvas.
+        var lastRecognizedStrokeCount: Int = 0
+        
         // Audio player for alert sound
         private var audioPlayer: AVAudioPlayer?
         
@@ -202,21 +207,57 @@ struct CanvasView: UIViewRepresentable {
         
         func performRecognition(on canvasView: PKCanvasView) {
             let drawing = canvasView.drawing
-            let bounds = drawing.bounds
+            let allStrokes = drawing.strokes
+            let currentStrokeCount = allStrokes.count
             
-            if bounds.isEmpty { return }
+            // Nothing to recognize
+            if allStrokes.isEmpty {
+                lastRecognizedStrokeCount = 0
+                return
+            }
             
             let token = UUID()
             recognitionToken = token
-            // Use the canvas view's own trait collection scale instead of deprecated UIScreen.main.scale
             let scale = canvasView.traitCollection.displayScale > 0 ? canvasView.traitCollection.displayScale : 2.0
             let languages = recognitionLanguages()
-            let allStrokes = drawing.strokes
+            
+            // --- Dirty-rect computation ---
+            // Only rasterize the region that changed instead of the entire canvas
+            // contentSize, which can be enormous on large boards.
+            let scanRect: CGRect
+            let isFullScan: Bool
+            
+            if currentStrokeCount > lastRecognizedStrokeCount && lastRecognizedStrokeCount > 0 {
+                // New strokes were added — compute bounding box of only the new ones
+                let newStrokes = allStrokes[lastRecognizedStrokeCount...]
+                var unionRect = CGRect.null
+                for stroke in newStrokes {
+                    unionRect = unionRect.union(stroke.renderBounds)
+                }
+                // Pad by 50 points so nearby context (e.g. a partly-visible word)
+                // is included in the rasterized image.
+                scanRect = unionRect.insetBy(dx: -50, dy: -50)
+                isFullScan = false
+            } else {
+                // First recognition, strokes erased / modified, or count unchanged —
+                // fall back to a full-bounds scan so zombie detection still works.
+                scanRect = drawing.bounds
+                isFullScan = true
+            }
+            
+            if scanRect.isEmpty || scanRect.isNull {
+                lastRecognizedStrokeCount = currentStrokeCount
+                return
+            }
+            
+            // Snapshot the count *before* dispatching so the next call can compare.
+            lastRecognizedStrokeCount = currentStrokeCount
             
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 guard let self = self else { return }
                 
-                let image = drawing.image(from: bounds, scale: scale)
+                // Rasterize only the dirty rect (or full bounds on a full scan).
+                let image = drawing.image(from: scanRect, scale: scale)
                 guard let cgImage = image.cgImage else { return }
                 
                 let request = VNRecognizeTextRequest { [weak self] request, error in
@@ -225,7 +266,12 @@ struct CanvasView: UIViewRepresentable {
                           self.recognitionToken == token else { return }
                     
                     DispatchQueue.main.async {
-                        self.processObservations(observations, in: bounds, strokes: allStrokes)
+                        self.processObservations(
+                            observations,
+                            in: scanRect,
+                            strokes: allStrokes,
+                            isFullScan: isFullScan
+                        )
                     }
                 }
                 
@@ -254,9 +300,16 @@ struct CanvasView: UIViewRepresentable {
             return Array(languages.prefix(3))
         }
         
+        /// - Parameters:
+        ///   - observations: Vision text observations from the scanned region.
+        ///   - scanRect: The canvas-coordinate rect that was rasterized.
+        ///   - strokes: A snapshot of all strokes at the time of recognition.
+        ///   - isFullScan: `true` when the entire drawing bounds were scanned
+        ///     (erase / first scan). `false` for a partial dirty-rect scan.
         func processObservations(_ observations: [VNRecognizedTextObservation],
-                                 in drawingBounds: CGRect,
-                                 strokes: [PKStroke]) {
+                                 in scanRect: CGRect,
+                                 strokes: [PKStroke],
+                                 isFullScan: Bool = true) {
             // ---------------------------------------------------------------
             // Phase 1: Map ALL recognized text to canvas coordinates.
             // We need every observation (not just time-parseable ones) so
@@ -280,10 +333,10 @@ struct CanvasView: UIViewRepresentable {
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
                 let boundingBox = observation.boundingBox
-                let w = drawingBounds.width
-                let h = drawingBounds.height
-                let x = drawingBounds.origin.x + (boundingBox.origin.x * w)
-                let y = drawingBounds.origin.y + ((1 - boundingBox.origin.y - boundingBox.height) * h)
+                let w = scanRect.width
+                let h = scanRect.height
+                let x = scanRect.origin.x + (boundingBox.origin.x * w)
+                let y = scanRect.origin.y + ((1 - boundingBox.origin.y - boundingBox.height) * h)
                 let rectWidth = boundingBox.width * w
                 let rectHeight = boundingBox.height * h
                 
@@ -323,51 +376,156 @@ struct CanvasView: UIViewRepresentable {
                         anchorY: centerY,
                         textRect: textRect,
                         isDuration: parseResult.isDuration,
-                        penColorHex: penColor.hexString
+                        penColorHex: penColor.hexString,
+                        label: parseResult.label
                     )
                     newTimers.append(newTimer)
                 }
             }
             
             // ---------------------------------------------------------------
-            // Phase 2: Deletion Sync — purge "zombie" timers.
-            // If the user erases the ink hidden under a timer label, the
-            // Vision scan will no longer report that text.  Any existing
-            // timer whose anchor falls inside the scan area but whose
-            // original text is NOT found nearby in the observations is a
-            // zombie and should be removed.
+            // Phase 1.5: Migration — detect lasso-moved timers.
+            // When the user moves ink with the PencilKit lasso tool, the
+            // recognized text reappears at a new location.  Without this
+            // phase, Phase 2 would delete the "missing" timer and Phase 3
+            // would create a fresh one — destroying the countdown state.
+            // Instead, we detect the move and update the timer's
+            // coordinates in-place so the countdown is preserved.
+            //
+            // Only performed during a full scan (same guard as Phase 2).
             // ---------------------------------------------------------------
-            let scanArea = drawingBounds
-            var zombieIDs: Set<UUID> = []
+            var migratedTimerIDs: Set<UUID> = []
             
-            for timer in parent.timers {
-                let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+            if isFullScan {
+                let scanArea = scanRect
                 
-                // Only consider timers whose anchor is inside the scanned region.
-                guard scanArea.contains(anchor) else { continue }
+                // Track which recognized-text indices have been claimed by a
+                // migration so each observation is consumed at most once.
+                var claimedRecognizedIndices: Set<Int> = []
                 
-                let timerText = timer.originalText
-                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                
-                // Check if any observation still matches this timer by both
-                // proximity (~50 px radius) AND text content.
-                let stillPresent = recognizedTexts.contains { recognized in
-                    let dx = timer.anchorX - recognized.centerX
-                    let dy = timer.anchorY - recognized.centerY
-                    let closeEnough = (dx * dx + dy * dy) < 2500
-                    let textMatch = timerText == recognized.normalizedText
-                        || timerText.contains(recognized.normalizedText)
-                        || recognized.normalizedText.contains(timerText)
-                    return closeEnough && textMatch
+                for (timerIdx, timer) in parent.timers.enumerated() {
+                    let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                    guard scanArea.contains(anchor) else { continue }
+                    
+                    let timerText = timer.originalText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    
+                    // Is the timer still at its original location?
+                    let stillPresent = recognizedTexts.contains { recognized in
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let closeEnough = (dx * dx + dy * dy) < 2500
+                        let textMatch = timerText == recognized.normalizedText
+                            || timerText.contains(recognized.normalizedText)
+                            || recognized.normalizedText.contains(timerText)
+                        return closeEnough && textMatch
+                    }
+                    
+                    // Timer is still where we expect — nothing to migrate.
+                    if stillPresent { continue }
+                    
+                    // Timer text is no longer at its anchor.  Search the
+                    // recognized texts for an exact match at a *different*
+                    // location (≥ 50 pt away) — this indicates a lasso move.
+                    var bestMatchIdx: Int?
+                    var bestDistanceSq: CGFloat = .greatestFiniteMagnitude
+                    
+                    for (idx, recognized) in recognizedTexts.enumerated() {
+                        guard !claimedRecognizedIndices.contains(idx) else { continue }
+                        
+                        // Require an exact normalized-text match.
+                        guard timerText == recognized.normalizedText else { continue }
+                        
+                        // Must be away from the original anchor (the nearby
+                        // case was already handled by the stillPresent check).
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let distSq = dx * dx + dy * dy
+                        guard distSq >= 2500 else { continue }
+                        
+                        // If multiple identical texts exist, pick the closest.
+                        if distSq < bestDistanceSq {
+                            bestDistanceSq = distSq
+                            bestMatchIdx = idx
+                        }
+                    }
+                    
+                    if let matchIdx = bestMatchIdx {
+                        let matched = recognizedTexts[matchIdx]
+                        
+                        // Migrate: update coordinates in-place, preserving
+                        // the countdown, expiration state, and all metadata.
+                        parent.timers[timerIdx].anchorX = matched.centerX
+                        parent.timers[timerIdx].anchorY = matched.centerY
+                        parent.timers[timerIdx].textRect = matched.textRect
+                        
+                        claimedRecognizedIndices.insert(matchIdx)
+                        migratedTimerIDs.insert(timer.id)
+                    }
                 }
                 
-                if !stillPresent {
-                    zombieIDs.insert(timer.id)
+                // Remove from newTimers any entries that overlap with a
+                // migrated timer's new position — the existing timer already
+                // covers that location and we must not create a duplicate.
+                if !migratedTimerIDs.isEmpty {
+                    newTimers.removeAll { candidate in
+                        parent.timers.contains { existing in
+                            guard migratedTimerIDs.contains(existing.id) else { return false }
+                            let dx = existing.anchorX - candidate.anchorX
+                            let dy = existing.anchorY - candidate.anchorY
+                            return (dx * dx + dy * dy) < 2500
+                        }
+                    }
                 }
             }
             
-            if !zombieIDs.isEmpty {
-                parent.timers.removeAll { zombieIDs.contains($0.id) }
+            // ---------------------------------------------------------------
+            // Phase 2: Deletion Sync — purge "zombie" timers.
+            // Only performed during a full scan (e.g. after erasing strokes
+            // or the very first recognition pass). During a partial dirty-rect
+            // scan we intentionally skip this: timers outside the dirty rect
+            // would never appear in the observations and would be falsely
+            // classified as zombies.
+            //
+            // Timers that were migrated in Phase 1.5 are excluded — their
+            // anchors have already been updated to the new location.
+            // ---------------------------------------------------------------
+            if isFullScan {
+                let scanArea = scanRect
+                var zombieIDs: Set<UUID> = []
+                
+                for timer in parent.timers {
+                    // Skip timers that were just migrated.
+                    guard !migratedTimerIDs.contains(timer.id) else { continue }
+                    
+                    let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                    
+                    // Only consider timers whose anchor is inside the scanned region.
+                    guard scanArea.contains(anchor) else { continue }
+                    
+                    let timerText = timer.originalText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    
+                    // Check if any observation still matches this timer by both
+                    // proximity (~50 px radius) AND text content.
+                    let stillPresent = recognizedTexts.contains { recognized in
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let closeEnough = (dx * dx + dy * dy) < 2500
+                        let textMatch = timerText == recognized.normalizedText
+                            || timerText.contains(recognized.normalizedText)
+                            || recognized.normalizedText.contains(timerText)
+                        return closeEnough && textMatch
+                    }
+                    
+                    if !stillPresent {
+                        zombieIDs.insert(timer.id)
+                    }
+                }
+                
+                if !zombieIDs.isEmpty {
+                    parent.timers.removeAll { zombieIDs.contains($0.id) }
+                }
             }
             
             // ---------------------------------------------------------------
@@ -428,8 +586,14 @@ struct CanvasView: UIViewRepresentable {
                         label.targetDate = timer.targetDate
                     }
                     label.updatePenColor(penColor)
+                    label.contextLabelText = timer.label
                 } else {
-                    label = TimerLabel(timerID: timer.id, targetDate: timer.targetDate, penColor: penColor)
+                    label = TimerLabel(
+                        timerID: timer.id,
+                        targetDate: timer.targetDate,
+                        penColor: penColor,
+                        contextLabel: timer.label
+                    )
                     label.onExpired = { [weak self] timerID in
                         self?.handleTimerExpired(timerID: timerID)
                     }
@@ -447,10 +611,14 @@ struct CanvasView: UIViewRepresentable {
                 
                 // Center the label directly over the handwriting to mask/replace it.
                 // The frame must fully cover the original textRect bounding box.
+                // When a contextual label is present, add extra height.
+                let hasContextLabel = timer.label != nil
                 if timer.textRect != .zero {
                     let padding: CGFloat = 4
+                    let extraHeight: CGFloat = hasContextLabel ? 18 : 0
                     let labelWidth  = max(timer.textRect.width  + padding * 2, 80)
-                    let labelHeight = max(timer.textRect.height + padding * 2, 30)
+                    let labelHeight = max(timer.textRect.height + padding * 2 + extraHeight,
+                                          hasContextLabel ? 46 : 30)
                     label.frame = CGRect(
                         x: timer.textRect.midX - labelWidth  / 2,
                         y: timer.textRect.midY - labelHeight / 2,
@@ -460,7 +628,7 @@ struct CanvasView: UIViewRepresentable {
                 } else {
                     // Fallback when textRect is unavailable — center on anchor point
                     let labelWidth: CGFloat = 100
-                    let labelHeight: CGFloat = 30
+                    let labelHeight: CGFloat = hasContextLabel ? 46 : 30
                     label.frame = CGRect(
                         x: timer.anchorX - labelWidth  / 2,
                         y: timer.anchorY - labelHeight / 2,
@@ -564,7 +732,7 @@ struct CanvasView: UIViewRepresentable {
             let isExpired = timer.targetDate <= Date()
             
             let alert = UIAlertController(
-                title: timer.originalText,
+                title: timer.label ?? timer.originalText,
                 message: isExpired ? "Timer finished!" : "Timer is running",
                 preferredStyle: .actionSheet
             )
@@ -686,6 +854,12 @@ struct CanvasView: UIViewRepresentable {
                 updatedTimers[index].targetDate = newDate
                 updatedTimers[index].isExpired = newDate <= Date()
                 updatedTimers[index].isDismissed = false
+                // Re-extract the contextual label from the edited text.
+                if let parseResult = self.timeParser.parseDetailed(text: newText) {
+                    updatedTimers[index].label = parseResult.label
+                } else {
+                    updatedTimers[index].label = nil
+                }
                 self.hapticsTriggered.remove(timerID)
                 self.parent.timers = updatedTimers
             }
@@ -909,8 +1083,11 @@ class HighlightOverlayView: UIView {
 }
 
 // MARK: - TimerLabel (Self-updating countdown badge)
+// A UIView containing an optional contextual label above and the main countdown
+// below. When no label is set, the countdown is centred and sized identically
+// to the previous single-UILabel implementation.
 
-class TimerLabel: UILabel {
+class TimerLabel: UIView {
     let timerID: UUID
     var targetDate: Date {
         didSet {
@@ -919,7 +1096,21 @@ class TimerLabel: UILabel {
         }
     }
     
+    /// Contextual label extracted from the handwritten text (e.g. "Call Mom").
+    /// Displayed as small text above the countdown when non-nil.
+    var contextLabelText: String? {
+        didSet {
+            contextLabelView.text = contextLabelText
+            contextLabelView.isHidden = (contextLabelText == nil)
+            setNeedsLayout()
+        }
+    }
+    
     var onExpired: ((UUID) -> Void)?
+    
+    // Sub-views
+    private let contextLabelView = UILabel()
+    private let countdownLabel = UILabel()
     
     private var isBlinking = false
     private var expiredCallbackFired = false
@@ -932,10 +1123,11 @@ class TimerLabel: UILabel {
             : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
     }
     
-    init(timerID: UUID, targetDate: Date, penColor: UIColor = .label) {
+    init(timerID: UUID, targetDate: Date, penColor: UIColor = .label, contextLabel: String? = nil) {
         self.timerID = timerID
         self.targetDate = targetDate
         self.penColor = penColor
+        self.contextLabelText = contextLabel
         super.init(frame: .zero)
         // CRITICAL: Never block Pencil or Eraser tools.
         self.isUserInteractionEnabled = false
@@ -951,30 +1143,65 @@ class TimerLabel: UILabel {
         // Refresh text color to match the new pen color (unless in expired/urgent state).
         let remaining = targetDate.timeIntervalSince(Date())
         if remaining > 300 {
-            textColor = penColor
+            countdownLabel.textColor = penColor
         }
+        contextLabelView.textColor = penColor.withAlphaComponent(0.55)
     }
     
     private func setupAppearance() {
-        // Handwriting-style font to blend with the canvas aesthetic
-        font = UIFont(name: "Noteworthy-Bold", size: 20)
-            ?? .systemFont(ofSize: 20, weight: .bold)
-        
-        // Match pen color so the countdown reads like the user's own writing
-        textColor = penColor
-        
         // Canvas-matching background masks the ink underneath
         backgroundColor = Self.canvasBackgroundColor
-        
         layer.cornerRadius = 4
         layer.borderWidth = 0
-        textAlignment = .center
         clipsToBounds = true
-        
-        // No shadow or border — the label should look like replaced handwriting
         layer.shadowOpacity = 0
         
+        // --- Context label (small, above countdown) ---
+        contextLabelView.font = UIFont(name: "Noteworthy", size: 11)
+            ?? .systemFont(ofSize: 11, weight: .medium)
+        contextLabelView.textColor = penColor.withAlphaComponent(0.55)
+        contextLabelView.textAlignment = .center
+        contextLabelView.text = contextLabelText
+        contextLabelView.isHidden = (contextLabelText == nil)
+        addSubview(contextLabelView)
+        
+        // --- Countdown label (main) ---
+        countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 20)
+            ?? .systemFont(ofSize: 20, weight: .bold)
+        countdownLabel.textColor = penColor
+        countdownLabel.textAlignment = .center
+        addSubview(countdownLabel)
+        
         updateDisplay()
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        
+        if contextLabelText != nil && !contextLabelView.isHidden {
+            let contextHeight: CGFloat = 15
+            let gap: CGFloat = 1
+            let countdownHeight = bounds.height - contextHeight - gap
+            
+            contextLabelView.frame = CGRect(
+                x: 0, y: 2,
+                width: bounds.width,
+                height: contextHeight
+            )
+            countdownLabel.frame = CGRect(
+                x: 0, y: contextHeight + gap,
+                width: bounds.width,
+                height: countdownHeight
+            )
+            // Slightly smaller font when the context label is present.
+            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 17)
+                ?? .systemFont(ofSize: 17, weight: .bold)
+        } else {
+            contextLabelView.frame = .zero
+            countdownLabel.frame = bounds
+            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 20)
+                ?? .systemFont(ofSize: 20, weight: .bold)
+        }
     }
     
     /// Refresh the countdown text and styling.
@@ -993,14 +1220,14 @@ class TimerLabel: UILabel {
             if overtime > 3600 {
                 let h = Int(overtime) / 3600
                 let m = (Int(overtime) % 3600) / 60
-                text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
+                countdownLabel.text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
             } else {
                 let m = Int(overtime) / 60
                 let s = Int(overtime) % 60
-                text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
             }
             
-            textColor = .systemRed
+            countdownLabel.textColor = .systemRed
             startBlinking()
             
             if !expiredCallbackFired {
@@ -1014,22 +1241,22 @@ class TimerLabel: UILabel {
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
                 let m = (Int(remaining) % 3600) / 60
-                text = " \(String(format: "%dh %02dm", h, m)) "
+                countdownLabel.text = " \(String(format: "%dh %02dm", h, m)) "
             } else {
                 let m = Int(remaining) / 60
                 let s = Int(remaining) % 60
-                text = " \(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = " \(String(format: "%02d:%02d", m, s)) "
             }
             
             // Text color transitions based on urgency
             if remaining < 30 {
-                textColor = .systemRed
+                countdownLabel.textColor = .systemRed
             } else if remaining < 60 {
-                textColor = .systemOrange
+                countdownLabel.textColor = .systemOrange
             } else if remaining < 300 {
-                textColor = .systemYellow.blended(with: .systemOrange)
+                countdownLabel.textColor = .systemYellow.blended(with: .systemOrange)
             } else {
-                textColor = penColor
+                countdownLabel.textColor = penColor
             }
         }
     }
