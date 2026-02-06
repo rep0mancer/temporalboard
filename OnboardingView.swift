@@ -129,7 +129,7 @@ struct OnboardingView: View {
 // MARK: - OnboardingFeature Model
 
 private struct OnboardingFeature: Identifiable {
-    let id = UUID()
+    var id: String { title }
     let icon: String
     let iconColor: Color
     let title: String
