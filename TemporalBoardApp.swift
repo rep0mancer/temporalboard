@@ -21,6 +21,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         requestNotificationPermission()
+        
+        // Register for silent push notifications used by CloudKit
+        // subscriptions to deliver remote-change alerts.
+        application.registerForRemoteNotifications()
+        
         return true
     }
     
@@ -34,6 +39,17 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
     }
+    
+    // MARK: - CloudKit Remote Notifications
+    
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        // CloudKit subscription delivers silent pushes when the board
+        // record changes on another device.
+        CloudKitManager.shared.handleRemoteNotification()
+        completionHandler(.newData)
+    }
 }
 
 // MARK: - BoardViewModel
@@ -42,12 +58,14 @@ class BoardViewModel: ObservableObject {
     @Published var drawing: PKDrawing = PKDrawing() {
         didSet {
             scheduleSaveDrawing()
+            scheduleCloudSave()
         }
     }
     @Published var timers: [BoardTimer] = [] {
         didSet {
             scheduleSaveTimers()
             scheduleNotifications()
+            scheduleCloudSave()
         }
     }
     
@@ -78,11 +96,30 @@ class BoardViewModel: ObservableObject {
     private var timersSaveWorkItem: DispatchWorkItem?
     private var isLoading = false
     
+    // MARK: - CloudKit Sync State
+    
+    private var cloudSaveWorkItem: DispatchWorkItem?
+    /// Prevents cloud push when applying data received from iCloud.
+    private var suppressCloudPush = false
+    /// Timestamp of the last local user-initiated modification.
+    /// Persisted in UserDefaults so it survives app relaunches.
+    private static let lastLocalChangeDateKey = "tb_lastLocalChangeDate"
+    private var lastLocalChangeDate: Date {
+        get { UserDefaults.standard.object(forKey: Self.lastLocalChangeDateKey) as? Date ?? .distantPast }
+        set { UserDefaults.standard.set(newValue, forKey: Self.lastLocalChangeDateKey) }
+    }
+    
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         drawingURL = docs.appendingPathComponent("drawing.data")
         timersURL = docs.appendingPathComponent("timers.json")
         // Data loading is deferred to loadDataAsync() to avoid blocking the main thread.
+        
+        // Wire up CloudKit: listen for remote changes and initialize the zone.
+        CloudKitManager.shared.onRemoteChange = { [weak self] in
+            self?.pullFromCloud()
+        }
+        CloudKitManager.shared.setup()
     }
     
     func updateTimers(_ newTimers: [BoardTimer]) {
@@ -131,11 +168,15 @@ class BoardViewModel: ObservableObject {
         // Cancel any pending debounced saves — we're performing a definitive flush now.
         drawingSaveWorkItem?.cancel()
         timersSaveWorkItem?.cancel()
+        cloudSaveWorkItem?.cancel()
         
         guard !isLoading else {
             application.endBackgroundTask(bgTaskID)
             return
         }
+        
+        // Best-effort cloud push alongside the local save.
+        pushToCloud()
         
         // Snapshot current state on the main thread before dispatching IO.
         let drawingData = drawing.dataRepresentation()
@@ -239,6 +280,77 @@ class BoardViewModel: ObservableObject {
                     self.timers = timers
                 }
                 self.isLoading = false
+                
+                // Pull latest from iCloud (applies only if cloud data is newer).
+                self.pullFromCloud()
+            }
+        }
+    }
+    
+    // MARK: - CloudKit Sync
+    
+    /// Debounced cloud save — waits 3 seconds after the last change before
+    /// pushing, so rapid edits are batched into a single upload.
+    private func scheduleCloudSave() {
+        guard !isLoading, !suppressCloudPush else { return }
+        lastLocalChangeDate = Date()
+        cloudSaveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.pushToCloud()
+        }
+        cloudSaveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
+    }
+    
+    /// Snapshot the current board state and upload it to iCloud.
+    private func pushToCloud() {
+        let drawingData = drawing.dataRepresentation()
+        guard let timersData = try? JSONEncoder().encode(timers) else { return }
+        
+        CloudKitManager.shared.save(
+            drawingData: drawingData,
+            timersData: timersData
+        ) { _ in }
+    }
+    
+    /// Fetch the latest board from iCloud.  Applies the cloud data only
+    /// when it is newer than the last local modification.
+    func pullFromCloud() {
+        guard !isLoading else { return }
+        
+        CloudKitManager.shared.fetch { [weak self] snapshot in
+            guard let self = self, let snapshot = snapshot else { return }
+            guard let cloudDate = snapshot.lastModified,
+                  cloudDate > self.lastLocalChangeDate else { return }
+            
+            DispatchQueue.main.async {
+                // Cancel any pending debounced cloud push.  Without this,
+                // a local change made while the fetch was in flight could
+                // overwrite the newer cloud data we're about to apply.
+                self.cloudSaveWorkItem?.cancel()
+                self.cloudSaveWorkItem = nil
+                
+                // suppressCloudPush prevents the incoming data from being
+                // echoed back to iCloud.  Local saves still happen so the
+                // on-disk cache stays fresh.
+                self.suppressCloudPush = true
+                
+                if let data = snapshot.drawingData,
+                   let cloudDrawing = try? PKDrawing(data: data) {
+                    self.drawing = cloudDrawing
+                }
+                if let data = snapshot.timersData,
+                   let cloudTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
+                    self.timers = cloudTimers
+                }
+                
+                // Advance the local timestamp to the cloud's value so that
+                // the state we now hold is correctly baselined.  Future
+                // local edits will set a newer date, and subsequent pulls
+                // won't re-apply this same snapshot.
+                self.lastLocalChangeDate = cloudDate
+                
+                self.suppressCloudPush = false
             }
         }
     }
