@@ -376,7 +376,8 @@ struct CanvasView: UIViewRepresentable {
                         anchorY: centerY,
                         textRect: textRect,
                         isDuration: parseResult.isDuration,
-                        penColorHex: penColor.hexString
+                        penColorHex: penColor.hexString,
+                        label: parseResult.label
                     )
                     newTimers.append(newTimer)
                 }
@@ -585,8 +586,14 @@ struct CanvasView: UIViewRepresentable {
                         label.targetDate = timer.targetDate
                     }
                     label.updatePenColor(penColor)
+                    label.contextLabelText = timer.label
                 } else {
-                    label = TimerLabel(timerID: timer.id, targetDate: timer.targetDate, penColor: penColor)
+                    label = TimerLabel(
+                        timerID: timer.id,
+                        targetDate: timer.targetDate,
+                        penColor: penColor,
+                        contextLabel: timer.label
+                    )
                     label.onExpired = { [weak self] timerID in
                         self?.handleTimerExpired(timerID: timerID)
                     }
@@ -604,10 +611,14 @@ struct CanvasView: UIViewRepresentable {
                 
                 // Center the label directly over the handwriting to mask/replace it.
                 // The frame must fully cover the original textRect bounding box.
+                // When a contextual label is present, add extra height.
+                let hasContextLabel = timer.label != nil
                 if timer.textRect != .zero {
                     let padding: CGFloat = 4
+                    let extraHeight: CGFloat = hasContextLabel ? 18 : 0
                     let labelWidth  = max(timer.textRect.width  + padding * 2, 80)
-                    let labelHeight = max(timer.textRect.height + padding * 2, 30)
+                    let labelHeight = max(timer.textRect.height + padding * 2 + extraHeight,
+                                          hasContextLabel ? 46 : 30)
                     label.frame = CGRect(
                         x: timer.textRect.midX - labelWidth  / 2,
                         y: timer.textRect.midY - labelHeight / 2,
@@ -617,7 +628,7 @@ struct CanvasView: UIViewRepresentable {
                 } else {
                     // Fallback when textRect is unavailable — center on anchor point
                     let labelWidth: CGFloat = 100
-                    let labelHeight: CGFloat = 30
+                    let labelHeight: CGFloat = hasContextLabel ? 46 : 30
                     label.frame = CGRect(
                         x: timer.anchorX - labelWidth  / 2,
                         y: timer.anchorY - labelHeight / 2,
@@ -721,7 +732,7 @@ struct CanvasView: UIViewRepresentable {
             let isExpired = timer.targetDate <= Date()
             
             let alert = UIAlertController(
-                title: timer.originalText,
+                title: timer.label ?? timer.originalText,
                 message: isExpired ? "Timer finished!" : "Timer is running",
                 preferredStyle: .actionSheet
             )
@@ -843,6 +854,12 @@ struct CanvasView: UIViewRepresentable {
                 updatedTimers[index].targetDate = newDate
                 updatedTimers[index].isExpired = newDate <= Date()
                 updatedTimers[index].isDismissed = false
+                // Re-extract the contextual label from the edited text.
+                if let parseResult = self.timeParser.parseDetailed(text: newText) {
+                    updatedTimers[index].label = parseResult.label
+                } else {
+                    updatedTimers[index].label = nil
+                }
                 self.hapticsTriggered.remove(timerID)
                 self.parent.timers = updatedTimers
             }
@@ -1066,8 +1083,11 @@ class HighlightOverlayView: UIView {
 }
 
 // MARK: - TimerLabel (Self-updating countdown badge)
+// A UIView containing an optional contextual label above and the main countdown
+// below. When no label is set, the countdown is centred and sized identically
+// to the previous single-UILabel implementation.
 
-class TimerLabel: UILabel {
+class TimerLabel: UIView {
     let timerID: UUID
     var targetDate: Date {
         didSet {
@@ -1076,7 +1096,21 @@ class TimerLabel: UILabel {
         }
     }
     
+    /// Contextual label extracted from the handwritten text (e.g. "Call Mom").
+    /// Displayed as small text above the countdown when non-nil.
+    var contextLabelText: String? {
+        didSet {
+            contextLabelView.text = contextLabelText
+            contextLabelView.isHidden = (contextLabelText == nil)
+            setNeedsLayout()
+        }
+    }
+    
     var onExpired: ((UUID) -> Void)?
+    
+    // Sub-views
+    private let contextLabelView = UILabel()
+    private let countdownLabel = UILabel()
     
     private var isBlinking = false
     private var expiredCallbackFired = false
@@ -1089,10 +1123,11 @@ class TimerLabel: UILabel {
             : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
     }
     
-    init(timerID: UUID, targetDate: Date, penColor: UIColor = .label) {
+    init(timerID: UUID, targetDate: Date, penColor: UIColor = .label, contextLabel: String? = nil) {
         self.timerID = timerID
         self.targetDate = targetDate
         self.penColor = penColor
+        self.contextLabelText = contextLabel
         super.init(frame: .zero)
         // CRITICAL: Never block Pencil or Eraser tools.
         self.isUserInteractionEnabled = false
@@ -1108,30 +1143,65 @@ class TimerLabel: UILabel {
         // Refresh text color to match the new pen color (unless in expired/urgent state).
         let remaining = targetDate.timeIntervalSince(Date())
         if remaining > 300 {
-            textColor = penColor
+            countdownLabel.textColor = penColor
         }
+        contextLabelView.textColor = penColor.withAlphaComponent(0.55)
     }
     
     private func setupAppearance() {
-        // Handwriting-style font to blend with the canvas aesthetic
-        font = UIFont(name: "Noteworthy-Bold", size: 20)
-            ?? .systemFont(ofSize: 20, weight: .bold)
-        
-        // Match pen color so the countdown reads like the user's own writing
-        textColor = penColor
-        
         // Canvas-matching background masks the ink underneath
         backgroundColor = Self.canvasBackgroundColor
-        
         layer.cornerRadius = 4
         layer.borderWidth = 0
-        textAlignment = .center
         clipsToBounds = true
-        
-        // No shadow or border — the label should look like replaced handwriting
         layer.shadowOpacity = 0
         
+        // --- Context label (small, above countdown) ---
+        contextLabelView.font = UIFont(name: "Noteworthy", size: 11)
+            ?? .systemFont(ofSize: 11, weight: .medium)
+        contextLabelView.textColor = penColor.withAlphaComponent(0.55)
+        contextLabelView.textAlignment = .center
+        contextLabelView.text = contextLabelText
+        contextLabelView.isHidden = (contextLabelText == nil)
+        addSubview(contextLabelView)
+        
+        // --- Countdown label (main) ---
+        countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 20)
+            ?? .systemFont(ofSize: 20, weight: .bold)
+        countdownLabel.textColor = penColor
+        countdownLabel.textAlignment = .center
+        addSubview(countdownLabel)
+        
         updateDisplay()
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        
+        if contextLabelText != nil && !contextLabelView.isHidden {
+            let contextHeight: CGFloat = 15
+            let gap: CGFloat = 1
+            let countdownHeight = bounds.height - contextHeight - gap
+            
+            contextLabelView.frame = CGRect(
+                x: 0, y: 2,
+                width: bounds.width,
+                height: contextHeight
+            )
+            countdownLabel.frame = CGRect(
+                x: 0, y: contextHeight + gap,
+                width: bounds.width,
+                height: countdownHeight
+            )
+            // Slightly smaller font when the context label is present.
+            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 17)
+                ?? .systemFont(ofSize: 17, weight: .bold)
+        } else {
+            contextLabelView.frame = .zero
+            countdownLabel.frame = bounds
+            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 20)
+                ?? .systemFont(ofSize: 20, weight: .bold)
+        }
     }
     
     /// Refresh the countdown text and styling.
@@ -1150,14 +1220,14 @@ class TimerLabel: UILabel {
             if overtime > 3600 {
                 let h = Int(overtime) / 3600
                 let m = (Int(overtime) % 3600) / 60
-                text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
+                countdownLabel.text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
             } else {
                 let m = Int(overtime) / 60
                 let s = Int(overtime) % 60
-                text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
             }
             
-            textColor = .systemRed
+            countdownLabel.textColor = .systemRed
             startBlinking()
             
             if !expiredCallbackFired {
@@ -1171,22 +1241,22 @@ class TimerLabel: UILabel {
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
                 let m = (Int(remaining) % 3600) / 60
-                text = " \(String(format: "%dh %02dm", h, m)) "
+                countdownLabel.text = " \(String(format: "%dh %02dm", h, m)) "
             } else {
                 let m = Int(remaining) / 60
                 let s = Int(remaining) % 60
-                text = " \(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = " \(String(format: "%02d:%02d", m, s)) "
             }
             
             // Text color transitions based on urgency
             if remaining < 30 {
-                textColor = .systemRed
+                countdownLabel.textColor = .systemRed
             } else if remaining < 60 {
-                textColor = .systemOrange
+                countdownLabel.textColor = .systemOrange
             } else if remaining < 300 {
-                textColor = .systemYellow.blended(with: .systemOrange)
+                countdownLabel.textColor = .systemYellow.blended(with: .systemOrange)
             } else {
-                textColor = penColor
+                countdownLabel.textColor = penColor
             }
         }
     }

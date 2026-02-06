@@ -8,6 +8,16 @@ struct TimeParseResult {
     let matchRange: Range<String.Index>
     /// Whether this is a countdown duration (e.g. "15 min") vs an absolute clock time.
     let isDuration: Bool
+    /// Contextual label extracted from the surrounding text (e.g. "Call Mom" from
+    /// "Call Mom in 15 min"). `nil` when the text contains only the time expression.
+    let label: String?
+    
+    init(targetDate: Date, matchRange: Range<String.Index>, isDuration: Bool, label: String? = nil) {
+        self.targetDate = targetDate
+        self.matchRange = matchRange
+        self.isDuration = isDuration
+        self.label = label
+    }
 }
 
 class TimeParser {
@@ -70,6 +80,8 @@ class TimeParser {
     }
     
     /// Parse with full details including the matched range within the source text.
+    /// Also extracts a contextual label from the surrounding text (e.g. "Call Mom"
+    /// from "Call Mom in 15 min").
     func parseDetailed(text: String) -> TimeParseResult? {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanText.isEmpty else { return nil }
@@ -78,42 +90,40 @@ class TimeParser {
         // Try each pattern in priority order.
         // Higher-specificity patterns first to avoid false positives.
         
+        var rawResult: TimeParseResult?
+        
         // 1. Compound duration: "1h 30m", "1 hour 30 minutes"
-        if let result = parseCompoundDuration(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseCompoundDuration(in: cleanText, now: now) }
         
         // 2. Simple duration: "30 min", "45m", "2h", "1 stunde", "90s"
-        if let result = parseDuration(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseDuration(in: cleanText, now: now) }
         
         // 3. Absolute time with AM/PM: "2:30 PM", "11am"
-        if let result = parseAbsoluteTimeAMPM(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseAbsoluteTimeAMPM(in: cleanText, now: now) }
         
         // 4. Absolute time 24h: "14:30", "9:05", "9.05"
-        if let result = parseAbsoluteTime(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseAbsoluteTime(in: cleanText, now: now) }
         
         // 5. "at" prefixed time: "at 3", "at 15", "at 3pm"
-        if let result = parseAtTime(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseAtTime(in: cleanText, now: now) }
         
         // 6. Bare hour with am/pm: "3pm", "11am"
-        if let result = parseBareHourAMPM(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseBareHourAMPM(in: cleanText, now: now) }
         
         // 7. Date with optional time: "03.02", "03/02 14:30"
-        if let result = parseDateExpression(in: cleanText, now: now) {
-            return result
-        }
+        if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
         
-        return nil
+        guard let result = rawResult else { return nil }
+        
+        // Extract a contextual label from the text surrounding the time expression.
+        let label = extractLabel(from: cleanText, excluding: result.matchRange)
+        
+        return TimeParseResult(
+            targetDate: result.targetDate,
+            matchRange: result.matchRange,
+            isDuration: result.isDuration,
+            label: label
+        )
     }
     
     // MARK: - Compound Duration ("1h 30m", "1 hour 30 min", "2h30m")
@@ -403,6 +413,88 @@ class TimeParser {
         
         let fullRange = dayRange.lowerBound..<endBound
         return TimeParseResult(targetDate: targetDate, matchRange: fullRange, isDuration: false)
+    }
+    
+    // MARK: - Contextual Label Extraction
+    
+    /// Prepositions / connector words that commonly bridge a label and a time
+    /// expression. These are stripped from the edges of the extracted label so
+    /// "Call Mom in 15 min" yields "Call Mom" rather than "Call Mom in".
+    /// Kept intentionally conservative — only words that serve purely as
+    /// time-expression connectors, not content words.
+    private static let connectorWords: Set<String> = [
+        // English
+        "in", "at", "for", "by", "after", "before", "about", "around", "within",
+        // German
+        "um", "für", "nach", "bis", "gegen", "etwa",
+        // French
+        "à", "dans", "pour", "vers",
+        // Italian / Spanish
+        "tra", "fra", "en", "sobre"
+    ]
+    
+    /// Extract a human-readable label from the text surrounding the matched
+    /// time expression.  Returns `nil` when the text is *only* the time
+    /// expression (e.g. "15 min") with no meaningful surrounding context.
+    ///
+    /// Examples:
+    /// - "Call Mom in 15 min"  → "Call Mom"
+    /// - "Meeting 2pm"         → "Meeting"
+    /// - "15 min"              → nil
+    /// - "Pick up kids at 3:30 PM" → "Pick up kids"
+    private func extractLabel(from text: String, excluding matchRange: Range<String.Index>) -> String? {
+        let before = text[text.startIndex..<matchRange.lowerBound]
+        let after  = text[matchRange.upperBound..<text.endIndex]
+        
+        var combined = (String(before) + " " + String(after))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Iteratively strip connector words from the end.
+        var changed = true
+        while changed && !combined.isEmpty {
+            changed = false
+            let lower = combined.lowercased()
+            for connector in Self.connectorWords {
+                if lower == connector {
+                    combined = ""
+                    changed = true
+                    break
+                }
+                if lower.hasSuffix(" " + connector) {
+                    combined = String(combined.dropLast(connector.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    changed = true
+                    break
+                }
+            }
+        }
+        
+        // Iteratively strip connector words from the start.
+        changed = true
+        while changed && !combined.isEmpty {
+            changed = false
+            let lower = combined.lowercased()
+            for connector in Self.connectorWords {
+                if lower == connector {
+                    combined = ""
+                    changed = true
+                    break
+                }
+                if lower.hasPrefix(connector + " ") {
+                    combined = String(combined.dropFirst(connector.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    changed = true
+                    break
+                }
+            }
+        }
+        
+        // Clean up stray punctuation at edges.
+        combined = combined.trimmingCharacters(
+            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ":-–—,;."))
+        )
+        
+        return combined.isEmpty ? nil : combined
     }
 }
 

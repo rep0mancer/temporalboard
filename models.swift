@@ -18,6 +18,10 @@ struct BoardTimer: Identifiable, Codable {
     var penColorHex: String = "#000000"
     /// Whether the user has acknowledged / dismissed the expiration alert.
     var isDismissed: Bool = false
+    /// Contextual label extracted from the surrounding handwritten text
+    /// (e.g. "Call Mom" from "Call Mom in 15 min"). `nil` when the text
+    /// contained only the time expression.
+    var label: String?
     
     // MARK: - Codable conformance for CGRect
     
@@ -25,10 +29,12 @@ struct BoardTimer: Identifiable, Codable {
         case id, originalText, targetDate, anchorX, anchorY
         case textRectX, textRectY, textRectW, textRectH
         case isExpired, isDuration, penColorHex, isDismissed
+        case label
     }
     
     init(originalText: String, targetDate: Date, anchorX: CGFloat, anchorY: CGFloat,
-         textRect: CGRect = .zero, isDuration: Bool = true, penColorHex: String = "#000000") {
+         textRect: CGRect = .zero, isDuration: Bool = true, penColorHex: String = "#000000",
+         label: String? = nil) {
         self.originalText = originalText
         self.targetDate = targetDate
         self.anchorX = anchorX
@@ -36,6 +42,7 @@ struct BoardTimer: Identifiable, Codable {
         self.textRect = textRect
         self.isDuration = isDuration
         self.penColorHex = penColorHex
+        self.label = label
     }
     
     init(from decoder: Decoder) throws {
@@ -49,6 +56,7 @@ struct BoardTimer: Identifiable, Codable {
         isDuration = try c.decodeIfPresent(Bool.self, forKey: .isDuration) ?? true
         penColorHex = try c.decodeIfPresent(String.self, forKey: .penColorHex) ?? "#000000"
         isDismissed = try c.decodeIfPresent(Bool.self, forKey: .isDismissed) ?? false
+        label = try c.decodeIfPresent(String.self, forKey: .label)
         let x = try c.decodeIfPresent(CGFloat.self, forKey: .textRectX) ?? 0
         let y = try c.decodeIfPresent(CGFloat.self, forKey: .textRectY) ?? 0
         let w = try c.decodeIfPresent(CGFloat.self, forKey: .textRectW) ?? 0
@@ -67,6 +75,7 @@ struct BoardTimer: Identifiable, Codable {
         try c.encode(isDuration, forKey: .isDuration)
         try c.encode(penColorHex, forKey: .penColorHex)
         try c.encode(isDismissed, forKey: .isDismissed)
+        try c.encodeIfPresent(label, forKey: .label)
         try c.encode(textRect.origin.x, forKey: .textRectX)
         try c.encode(textRect.origin.y, forKey: .textRectY)
         try c.encode(textRect.size.width, forKey: .textRectW)
