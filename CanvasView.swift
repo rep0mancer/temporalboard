@@ -112,6 +112,11 @@ struct CanvasView: UIViewRepresentable {
         // Track which timers already triggered haptic & audio feedback
         var hapticsTriggered: Set<UUID> = []
         
+        // Dirty-rect tracking: stroke count at last recognition pass.
+        // Used to determine which strokes are "new" so we only rasterize
+        // the changed region instead of the entire canvas.
+        var lastRecognizedStrokeCount: Int = 0
+        
         // Audio player for alert sound
         private var audioPlayer: AVAudioPlayer?
         
@@ -202,21 +207,57 @@ struct CanvasView: UIViewRepresentable {
         
         func performRecognition(on canvasView: PKCanvasView) {
             let drawing = canvasView.drawing
-            let bounds = drawing.bounds
+            let allStrokes = drawing.strokes
+            let currentStrokeCount = allStrokes.count
             
-            if bounds.isEmpty { return }
+            // Nothing to recognize
+            if allStrokes.isEmpty {
+                lastRecognizedStrokeCount = 0
+                return
+            }
             
             let token = UUID()
             recognitionToken = token
-            // Use the canvas view's own trait collection scale instead of deprecated UIScreen.main.scale
             let scale = canvasView.traitCollection.displayScale > 0 ? canvasView.traitCollection.displayScale : 2.0
             let languages = recognitionLanguages()
-            let allStrokes = drawing.strokes
+            
+            // --- Dirty-rect computation ---
+            // Only rasterize the region that changed instead of the entire canvas
+            // contentSize, which can be enormous on large boards.
+            let scanRect: CGRect
+            let isFullScan: Bool
+            
+            if currentStrokeCount > lastRecognizedStrokeCount && lastRecognizedStrokeCount > 0 {
+                // New strokes were added — compute bounding box of only the new ones
+                let newStrokes = allStrokes[lastRecognizedStrokeCount...]
+                var unionRect = CGRect.null
+                for stroke in newStrokes {
+                    unionRect = unionRect.union(stroke.renderBounds)
+                }
+                // Pad by 50 points so nearby context (e.g. a partly-visible word)
+                // is included in the rasterized image.
+                scanRect = unionRect.insetBy(dx: -50, dy: -50)
+                isFullScan = false
+            } else {
+                // First recognition, strokes erased / modified, or count unchanged —
+                // fall back to a full-bounds scan so zombie detection still works.
+                scanRect = drawing.bounds
+                isFullScan = true
+            }
+            
+            if scanRect.isEmpty || scanRect.isNull {
+                lastRecognizedStrokeCount = currentStrokeCount
+                return
+            }
+            
+            // Snapshot the count *before* dispatching so the next call can compare.
+            lastRecognizedStrokeCount = currentStrokeCount
             
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 guard let self = self else { return }
                 
-                let image = drawing.image(from: bounds, scale: scale)
+                // Rasterize only the dirty rect (or full bounds on a full scan).
+                let image = drawing.image(from: scanRect, scale: scale)
                 guard let cgImage = image.cgImage else { return }
                 
                 let request = VNRecognizeTextRequest { [weak self] request, error in
@@ -225,7 +266,12 @@ struct CanvasView: UIViewRepresentable {
                           self.recognitionToken == token else { return }
                     
                     DispatchQueue.main.async {
-                        self.processObservations(observations, in: bounds, strokes: allStrokes)
+                        self.processObservations(
+                            observations,
+                            in: scanRect,
+                            strokes: allStrokes,
+                            isFullScan: isFullScan
+                        )
                     }
                 }
                 
@@ -254,9 +300,16 @@ struct CanvasView: UIViewRepresentable {
             return Array(languages.prefix(3))
         }
         
+        /// - Parameters:
+        ///   - observations: Vision text observations from the scanned region.
+        ///   - scanRect: The canvas-coordinate rect that was rasterized.
+        ///   - strokes: A snapshot of all strokes at the time of recognition.
+        ///   - isFullScan: `true` when the entire drawing bounds were scanned
+        ///     (erase / first scan). `false` for a partial dirty-rect scan.
         func processObservations(_ observations: [VNRecognizedTextObservation],
-                                 in drawingBounds: CGRect,
-                                 strokes: [PKStroke]) {
+                                 in scanRect: CGRect,
+                                 strokes: [PKStroke],
+                                 isFullScan: Bool = true) {
             // ---------------------------------------------------------------
             // Phase 1: Map ALL recognized text to canvas coordinates.
             // We need every observation (not just time-parseable ones) so
@@ -280,10 +333,10 @@ struct CanvasView: UIViewRepresentable {
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
                 let boundingBox = observation.boundingBox
-                let w = drawingBounds.width
-                let h = drawingBounds.height
-                let x = drawingBounds.origin.x + (boundingBox.origin.x * w)
-                let y = drawingBounds.origin.y + ((1 - boundingBox.origin.y - boundingBox.height) * h)
+                let w = scanRect.width
+                let h = scanRect.height
+                let x = scanRect.origin.x + (boundingBox.origin.x * w)
+                let y = scanRect.origin.y + ((1 - boundingBox.origin.y - boundingBox.height) * h)
                 let rectWidth = boundingBox.width * w
                 let rectHeight = boundingBox.height * h
                 
@@ -331,43 +384,45 @@ struct CanvasView: UIViewRepresentable {
             
             // ---------------------------------------------------------------
             // Phase 2: Deletion Sync — purge "zombie" timers.
-            // If the user erases the ink hidden under a timer label, the
-            // Vision scan will no longer report that text.  Any existing
-            // timer whose anchor falls inside the scan area but whose
-            // original text is NOT found nearby in the observations is a
-            // zombie and should be removed.
+            // Only performed during a full scan (e.g. after erasing strokes
+            // or the very first recognition pass). During a partial dirty-rect
+            // scan we intentionally skip this: timers outside the dirty rect
+            // would never appear in the observations and would be falsely
+            // classified as zombies.
             // ---------------------------------------------------------------
-            let scanArea = drawingBounds
-            var zombieIDs: Set<UUID> = []
-            
-            for timer in parent.timers {
-                let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+            if isFullScan {
+                let scanArea = scanRect
+                var zombieIDs: Set<UUID> = []
                 
-                // Only consider timers whose anchor is inside the scanned region.
-                guard scanArea.contains(anchor) else { continue }
-                
-                let timerText = timer.originalText
-                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                
-                // Check if any observation still matches this timer by both
-                // proximity (~50 px radius) AND text content.
-                let stillPresent = recognizedTexts.contains { recognized in
-                    let dx = timer.anchorX - recognized.centerX
-                    let dy = timer.anchorY - recognized.centerY
-                    let closeEnough = (dx * dx + dy * dy) < 2500
-                    let textMatch = timerText == recognized.normalizedText
-                        || timerText.contains(recognized.normalizedText)
-                        || recognized.normalizedText.contains(timerText)
-                    return closeEnough && textMatch
+                for timer in parent.timers {
+                    let anchor = CGPoint(x: timer.anchorX, y: timer.anchorY)
+                    
+                    // Only consider timers whose anchor is inside the scanned region.
+                    guard scanArea.contains(anchor) else { continue }
+                    
+                    let timerText = timer.originalText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    
+                    // Check if any observation still matches this timer by both
+                    // proximity (~50 px radius) AND text content.
+                    let stillPresent = recognizedTexts.contains { recognized in
+                        let dx = timer.anchorX - recognized.centerX
+                        let dy = timer.anchorY - recognized.centerY
+                        let closeEnough = (dx * dx + dy * dy) < 2500
+                        let textMatch = timerText == recognized.normalizedText
+                            || timerText.contains(recognized.normalizedText)
+                            || recognized.normalizedText.contains(timerText)
+                        return closeEnough && textMatch
+                    }
+                    
+                    if !stillPresent {
+                        zombieIDs.insert(timer.id)
+                    }
                 }
                 
-                if !stillPresent {
-                    zombieIDs.insert(timer.id)
+                if !zombieIDs.isEmpty {
+                    parent.timers.removeAll { zombieIDs.contains($0.id) }
                 }
-            }
-            
-            if !zombieIDs.isEmpty {
-                parent.timers.removeAll { zombieIDs.contains($0.id) }
             }
             
             // ---------------------------------------------------------------
