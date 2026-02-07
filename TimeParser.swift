@@ -98,20 +98,22 @@ class TimeParser {
         // 2. Simple duration: "30 min", "45m", "2h", "1 stunde", "90s"
         if rawResult == nil { rawResult = parseDuration(in: cleanText, now: now) }
         
-        // 3. Absolute time with AM/PM: "2:30 PM", "11am"
+        // 3. Date with optional time: "03.02", "03/02 14:30"
+        // Must run before absolute-time patterns so that "03.02" is parsed
+        // as March 2nd (date) rather than 3:02 AM (time).
+        if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
+        
+        // 4. Absolute time with AM/PM: "2:30 PM", "11am"
         if rawResult == nil { rawResult = parseAbsoluteTimeAMPM(in: cleanText, now: now) }
         
-        // 4. Absolute time 24h: "14:30", "9:05", "9.05"
+        // 5. Absolute time 24h: "14:30", "9:05", "9.05"
         if rawResult == nil { rawResult = parseAbsoluteTime(in: cleanText, now: now) }
         
-        // 5. "at" prefixed time: "at 3", "at 15", "at 3pm"
+        // 6. "at" prefixed time: "at 3", "at 15", "at 3pm"
         if rawResult == nil { rawResult = parseAtTime(in: cleanText, now: now) }
         
-        // 6. Bare hour with am/pm: "3pm", "11am"
+        // 7. Bare hour with am/pm: "3pm", "11am"
         if rawResult == nil { rawResult = parseBareHourAMPM(in: cleanText, now: now) }
-        
-        // 7. Date with optional time: "03.02", "03/02 14:30"
-        if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
         
         guard let result = rawResult else { return nil }
         
