@@ -712,7 +712,7 @@ struct CanvasView: UIViewRepresentable {
                         if let bgView = backgroundView {
                             canvasView.insertSubview(highlight, aboveSubview: bgView)
                         } else {
-                            canvasView.insertSubview(highlight, at: 1)
+                            canvasView.insertSubview(highlight, at: min(1, canvasView.subviews.count))
                         }
                         highlightViews[timer.id] = highlight
                     }

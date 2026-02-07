@@ -282,7 +282,12 @@ class BoardViewModel: ObservableObject {
                     self.drawing = drawing
                 }
                 if let timers = loadedTimers {
-                    self.timers = timers
+                    var normalizedTimers = timers
+                    let now = Date()
+                    for i in normalizedTimers.indices {
+                        normalizedTimers[i].isExpired = normalizedTimers[i].targetDate <= now
+                    }
+                    self.timers = normalizedTimers
                 }
                 self.isLoading = false
                 
@@ -346,7 +351,12 @@ class BoardViewModel: ObservableObject {
                 }
                 if let data = snapshot.timersData,
                    let cloudTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
-                    self.timers = cloudTimers
+                    var normalizedTimers = cloudTimers
+                    let now = Date()
+                    for i in normalizedTimers.indices {
+                        normalizedTimers[i].isExpired = normalizedTimers[i].targetDate <= now
+                    }
+                    self.timers = normalizedTimers
                 }
                 
                 // Advance the local timestamp to the cloud's value so that

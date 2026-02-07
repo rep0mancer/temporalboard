@@ -99,8 +99,8 @@ class TimeParser {
         if rawResult == nil { rawResult = parseDuration(in: cleanText, now: now) }
         
         // 3. Date with optional time: "03.02", "03/02 14:30"
-        // Must run before absolute-time patterns so that "03.02" is parsed
-        // as March 2nd (date) rather than 3:02 AM (time).
+        // Must run before absolute-time patterns so that two-digit dd.mm forms
+        // (e.g. "03.02" = 3 February) are parsed as dates.
         if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
         
         // 4. Absolute time with AM/PM: "2:30 PM", "11am"
@@ -378,6 +378,15 @@ class TimeParser {
         
         guard let day = Int(text[dayRange]),
               let month = Int(text[monthRange]) else { return nil }
+
+        // Deterministic disambiguation for dot-separated tokens:
+        // - slash (/) always means date
+        // - dot (.) means date only when day token has two digits (e.g. 03.02)
+        let separatorRange = dayRange.upperBound..<monthRange.lowerBound
+        let separator = text[separatorRange]
+        if separator == "." && text[dayRange].count == 1 {
+            return nil
+        }
         
         guard day >= 1 && day <= 31 && month >= 1 && month <= 12 else { return nil }
         
