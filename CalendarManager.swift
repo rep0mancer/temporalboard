@@ -110,7 +110,8 @@ final class CalendarManager {
         event.title = title
         event.startDate = date
         event.endDate = Calendar.current.date(byAdding: .hour, value: 1, to: date) ?? date
-        event.calendar = store.defaultCalendarForNewEvents
+        guard let defaultCalendar = store.defaultCalendarForNewEvents else { return nil }
+        event.calendar = defaultCalendar
         
         // Add a 15-minute reminder so the user gets an alert before the event.
         let alarm = EKAlarm(relativeOffset: -15 * 60)
