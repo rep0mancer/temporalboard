@@ -131,9 +131,31 @@ final class CalendarManager {
     
     /// Removes a previously created calendar event by its identifier.
     /// Fails silently if the event no longer exists or access is denied.
+    ///
+    /// This method performs EventKit I/O and should be called from a
+    /// background context (e.g. inside a `Task`), never directly on the
+    /// main thread.
     func deleteEvent(identifier: String) {
-        guard authorizationStatus == .authorized ||
-              authorizationStatus != .denied else { return }
+        let status = authorizationStatus
+        
+        // Only proceed when the app holds a status that permits
+        // event store mutations.  All other cases (denied, restricted,
+        // notDetermined) must bail out.
+        switch status {
+        case .authorized:
+            break
+        default:
+            if #available(iOS 17.0, *) {
+                switch status {
+                case .fullAccess, .writeOnly:
+                    break
+                default:
+                    return
+                }
+            } else {
+                return
+            }
+        }
         
         guard let event = store.event(withIdentifier: identifier) else { return }
         
