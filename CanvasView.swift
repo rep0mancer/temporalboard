@@ -524,6 +524,19 @@ struct CanvasView: UIViewRepresentable {
                 }
                 
                 if !zombieIDs.isEmpty {
+                    // Clean up calendar events for zombie timers in the
+                    // background — deleteEvent performs EventKit I/O and
+                    // must not block the main thread.
+                    let eventIDsToDelete = parent.timers
+                        .filter { zombieIDs.contains($0.id) }
+                        .compactMap { $0.calendarEventID }
+                    if !eventIDsToDelete.isEmpty {
+                        Task.detached(priority: .utility) {
+                            for eventID in eventIDsToDelete {
+                                CalendarManager.shared.deleteEvent(identifier: eventID)
+                            }
+                        }
+                    }
                     parent.timers.removeAll { zombieIDs.contains($0.id) }
                 }
             }
@@ -537,6 +550,12 @@ struct CanvasView: UIViewRepresentable {
                 // Subtle haptic to confirm recognition (uses pre-warmed generator)
                 lightImpactGenerator.impactOccurred()
                 lightImpactGenerator.prepare() // Re-arm for next use
+                
+                // Phase 3.5: Calendar integration — asynchronously create
+                // iOS Calendar events for qualifying timers (long-term or
+                // keyword-important).  Runs off the main thread; the
+                // returned eventIdentifier is written back on main.
+                scheduleCalendarEvents(for: newTimers)
             }
         }
         
@@ -557,6 +576,41 @@ struct CanvasView: UIViewRepresentable {
             }
             
             return colorCounts.values.max(by: { $0.1 < $1.1 })?.0 ?? .label
+        }
+        
+        // MARK: - Calendar Integration
+        
+        /// Asynchronously creates iOS Calendar events for newly recognized
+        /// timers that meet the "long-term or important" criteria.  Does NOT
+        /// block the main thread or the recognition loop.
+        private func scheduleCalendarEvents(for timers: [BoardTimer]) {
+            let calendarManager = CalendarManager.shared
+            
+            for timer in timers {
+                guard calendarManager.shouldCreateCalendarEvent(
+                    targetDate: timer.targetDate,
+                    label: timer.label
+                ) else { continue }
+                
+                let timerID = timer.id
+                let title = timer.label ?? timer.originalText
+                let date = timer.targetDate
+                
+                Task { [weak self] in
+                    guard let eventID = await calendarManager.addEvent(
+                        title: title,
+                        date: date
+                    ) else { return }
+                    
+                    // Write the event identifier back to the model on main.
+                    await MainActor.run {
+                        guard let self = self else { return }
+                        if let idx = self.parent.timers.firstIndex(where: { $0.id == timerID }) {
+                            self.parent.timers[idx].calendarEventID = eventID
+                        }
+                    }
+                }
+            }
         }
         
         // MARK: - Timer & Highlight Views Management
@@ -867,7 +921,20 @@ struct CanvasView: UIViewRepresentable {
         
         private func deleteTimer(_ timerID: UUID) {
             DispatchQueue.main.async {
+                // Capture the calendar event ID before removing the timer.
+                let eventID = self.parent.timers
+                    .first(where: { $0.id == timerID })?
+                    .calendarEventID
+                
                 self.parent.timers.removeAll { $0.id == timerID }
+                
+                // Clean up the associated calendar event in the background —
+                // deleteEvent performs EventKit I/O and must not block main.
+                if let eventID = eventID {
+                    Task.detached(priority: .utility) {
+                        CalendarManager.shared.deleteEvent(identifier: eventID)
+                    }
+                }
             }
         }
         
