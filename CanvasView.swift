@@ -13,6 +13,8 @@ struct CanvasView: UIViewRepresentable {
     @Binding var timers: [BoardTimer]
     let onAddTimers: ([BoardTimer]) -> Void
     let heartbeat: AnyPublisher<Date, Never>
+    /// Version token from the ViewModel — changes whenever `drawing` is set.
+    var drawingVersion: UUID
     
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
@@ -74,12 +76,11 @@ struct CanvasView: UIViewRepresentable {
         // reference must be refreshed here to avoid reading stale bindings.
         context.coordinator.parent = self
         
-        // Avoid expensive full-data serialization comparison on every SwiftUI update.
-        // Use lightweight heuristics (stroke count + bounds) to detect actual changes.
-        let currentStrokes = uiView.drawing.strokes.count
-        let newStrokes = drawing.strokes.count
-        let boundsChanged = uiView.drawing.bounds != drawing.bounds
-        if currentStrokes != newStrokes || boundsChanged {
+        // Use a lightweight version token to detect drawing changes.
+        // This catches stroke moves (via CloudKit sync) where count and
+        // bounds remain identical but the drawing data differs.
+        if context.coordinator.lastDrawingVersion != drawingVersion {
+            context.coordinator.lastDrawingVersion = drawingVersion
             uiView.drawing = drawing
         }
         context.coordinator.updateTimerViews(in: uiView, with: timers)
@@ -116,6 +117,10 @@ struct CanvasView: UIViewRepresentable {
         // Used to determine which strokes are "new" so we only rasterize
         // the changed region instead of the entire canvas.
         var lastRecognizedStrokeCount: Int = 0
+        
+        /// Tracks the last drawing version applied to the PKCanvasView,
+        /// so updateUIView only pushes a new drawing when it actually changes.
+        var lastDrawingVersion: UUID = UUID()
         
         // Audio player for alert sound
         private var audioPlayer: AVAudioPlayer?
@@ -701,7 +706,14 @@ struct CanvasView: UIViewRepresentable {
                         highlight.updatePenColor(penColor)
                     } else {
                         highlight = HighlightOverlayView(penColor: penColor)
-                        canvasView.insertSubview(highlight, at: 0)
+                        // Insert above the background view so the highlight is
+                        // visible (index 0 would place it behind the opaque
+                        // DotGridBackgroundView).
+                        if let bgView = backgroundView {
+                            canvasView.insertSubview(highlight, aboveSubview: bgView)
+                        } else {
+                            canvasView.insertSubview(highlight, at: 1)
+                        }
                         highlightViews[timer.id] = highlight
                     }
                     let padding: CGFloat = 8
@@ -731,6 +743,17 @@ struct CanvasView: UIViewRepresentable {
         
         private func handleTimerExpired(timerID: UUID) {
             guard !hapticsTriggered.contains(timerID) else { return }
+            
+            // Only trigger feedback for the Running → Expired transition.
+            // If the timer is already marked isExpired in the model (e.g. the
+            // app relaunched with stale expired timers), skip the haptic/sound
+            // blast to avoid a feedback storm on launch.
+            if let timer = parent.timers.first(where: { $0.id == timerID }),
+               timer.isExpired {
+                hapticsTriggered.insert(timerID)
+                return
+            }
+            
             hapticsTriggered.insert(timerID)
             
             // Strong haptic pattern: warning + impact (uses pre-warmed generators)

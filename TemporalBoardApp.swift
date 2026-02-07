@@ -57,10 +57,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 class BoardViewModel: ObservableObject {
     @Published var drawing: PKDrawing = PKDrawing() {
         didSet {
+            drawingVersion = UUID()
             scheduleSaveDrawing()
             scheduleCloudSave()
         }
     }
+    /// Lightweight version token that changes every time `drawing` is set.
+    /// Used by CanvasView.updateUIView to detect changes that don't alter
+    /// stroke count or bounds (e.g. a CloudKit-synced stroke move).
+    @Published var drawingVersion = UUID()
     @Published var timers: [BoardTimer] = [] {
         didSet {
             scheduleSaveTimers()
@@ -408,7 +413,8 @@ struct ContentView: View {
                 drawing: $viewModel.drawing,
                 timers: $viewModel.timers,
                 onAddTimers: viewModel.addTimers,
-                heartbeat: viewModel.heartbeat
+                heartbeat: viewModel.heartbeat,
+                drawingVersion: viewModel.drawingVersion
             )
             .edgesIgnoringSafeArea(.all)
             
