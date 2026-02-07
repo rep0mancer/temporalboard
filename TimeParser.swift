@@ -98,19 +98,20 @@ class TimeParser {
         // 2. Simple duration: "30 min", "45m", "2h", "1 stunde", "90s"
         if rawResult == nil { rawResult = parseDuration(in: cleanText, now: now) }
         
-        // 3. Date with optional time: "03.02", "03/02 14:30"
-        // Must run before absolute-time patterns so that "03.02" is parsed
-        // as March 2nd (date) rather than 3:02 AM (time).
+        // 3. "at" prefixed time: "at 3", "at 15", "at 3pm", "um 12.05"
+        // Run before date parsing so explicit time context wins (e.g. "um 12.05").
+        if rawResult == nil { rawResult = parseAtTime(in: cleanText, now: now) }
+
+        // 4. Date with optional time: "03.02", "03/02 14:30"
+        // Runs before bare/absolute time parsing so two-digit dd.mm forms
+        // (e.g. "03.02" = 3 February) remain dates.
         if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
         
-        // 4. Absolute time with AM/PM: "2:30 PM", "11am"
+        // 5. Absolute time with AM/PM: "2:30 PM", "11am"
         if rawResult == nil { rawResult = parseAbsoluteTimeAMPM(in: cleanText, now: now) }
         
-        // 5. Absolute time 24h: "14:30", "9:05", "9.05"
+        // 6. Absolute time 24h: "14:30", "9:05", "9.05"
         if rawResult == nil { rawResult = parseAbsoluteTime(in: cleanText, now: now) }
-        
-        // 6. "at" prefixed time: "at 3", "at 15", "at 3pm"
-        if rawResult == nil { rawResult = parseAtTime(in: cleanText, now: now) }
         
         // 7. Bare hour with am/pm: "3pm", "11am"
         if rawResult == nil { rawResult = parseBareHourAMPM(in: cleanText, now: now) }
@@ -378,6 +379,15 @@ class TimeParser {
         
         guard let day = Int(text[dayRange]),
               let month = Int(text[monthRange]) else { return nil }
+
+        // Deterministic disambiguation for dot-separated tokens:
+        // - slash (/) always means date
+        // - dot (.) means date only when day token has two digits (e.g. 03.02)
+        let separatorRange = dayRange.upperBound..<monthRange.lowerBound
+        let separator = text[separatorRange]
+        if separator == "." && text[dayRange].count == 1 {
+            return nil
+        }
         
         guard day >= 1 && day <= 31 && month >= 1 && month <= 12 else { return nil }
         
