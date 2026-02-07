@@ -282,18 +282,25 @@ class BoardViewModel: ObservableObject {
                     self.drawing = drawing
                 }
                 if let timers = loadedTimers {
-                    var normalizedTimers = timers
-                    let now = Date()
-                    for i in normalizedTimers.indices {
-                        normalizedTimers[i].isExpired = normalizedTimers[i].targetDate <= now
-                    }
-                    self.timers = normalizedTimers
+                    self.timers = self.normalizeTimers(from: timers)
                 }
                 self.isLoading = false
                 
                 // Pull latest from iCloud (applies only if cloud data is newer).
                 self.pullFromCloud()
             }
+        }
+    }
+    
+    /// Normalizes transient expiration state at load/apply time so UI-created
+    /// labels do not emit launch-time feedback for already-expired timers.
+    /// Keeps `isDismissed` and all other fields unchanged.
+    private func normalizeTimers(from timers: [BoardTimer]) -> [BoardTimer] {
+        let now = Date()
+        return timers.map { timer in
+            var normalized = timer
+            normalized.isExpired = normalized.targetDate <= now
+            return normalized
         }
     }
     
@@ -351,12 +358,7 @@ class BoardViewModel: ObservableObject {
                 }
                 if let data = snapshot.timersData,
                    let cloudTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
-                    var normalizedTimers = cloudTimers
-                    let now = Date()
-                    for i in normalizedTimers.indices {
-                        normalizedTimers[i].isExpired = normalizedTimers[i].targetDate <= now
-                    }
-                    self.timers = normalizedTimers
+                    self.timers = self.normalizeTimers(from: cloudTimers)
                 }
                 
                 // Advance the local timestamp to the cloud's value so that
