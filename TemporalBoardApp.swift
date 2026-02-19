@@ -73,6 +73,22 @@ class BoardViewModel: ObservableObject {
             scheduleCloudSave()
         }
     }
+
+    var timerOverlays: [TimerOverlayModel] {
+        timers.map { timer in
+            TimerOverlayModel(
+                id: timer.id,
+                frame: overlayFrame(for: timer),
+                targetDate: timer.targetDate,
+                penColor: Color(UIColor(hex: timer.penColorHex)),
+                label: timer.label,
+                isExpired: timer.targetDate <= Date(),
+                isDismissed: timer.isDismissed,
+                isDuration: timer.isDuration,
+                originalText: timer.originalText
+            )
+        }
+    }
     
     // MARK: - Centralized Heartbeat
     // A single Combine publisher that ticks once per second on the main RunLoop.
@@ -156,6 +172,51 @@ class BoardViewModel: ObservableObject {
     func clearAll() {
         timers.removeAll()
         drawing = PKDrawing()
+    }
+
+    func markTimerExpired(_ timerID: UUID) {
+        guard let idx = timers.firstIndex(where: { $0.id == timerID }) else { return }
+        timers[idx].isExpired = true
+    }
+
+    func dismissTimerAlert(_ timerID: UUID) {
+        guard let idx = timers.firstIndex(where: { $0.id == timerID }) else { return }
+        timers[idx].isDismissed = true
+    }
+
+    func extendTimer(_ timerID: UUID, byMinutes minutes: Int) {
+        guard let idx = timers.firstIndex(where: { $0.id == timerID }) else { return }
+        let now = Date()
+        let base = max(timers[idx].targetDate, now)
+        if let newDate = Calendar.current.date(byAdding: .minute, value: minutes, to: base) {
+            timers[idx].targetDate = newDate
+            timers[idx].isExpired = false
+            timers[idx].isDismissed = false
+        }
+    }
+
+    func deleteTimer(_ timerID: UUID) {
+        let eventID = timers.first(where: { $0.id == timerID })?.calendarEventID
+        timers.removeAll { $0.id == timerID }
+        if let eventID {
+            Task.detached(priority: .utility) {
+                CalendarManager.shared.deleteEvent(identifier: eventID)
+            }
+        }
+    }
+
+    private func overlayFrame(for timer: BoardTimer) -> CGRect {
+        let hasContextLabel = timer.label != nil
+        if timer.textRect != .zero {
+            let padding: CGFloat = 4
+            let extraHeight: CGFloat = hasContextLabel ? 18 : 0
+            let labelWidth = max(timer.textRect.width + padding * 2, 80)
+            let labelHeight = max(timer.textRect.height + padding * 2 + extraHeight, hasContextLabel ? 46 : 30)
+            return CGRect(x: timer.textRect.midX - labelWidth / 2, y: timer.textRect.midY - labelHeight / 2, width: labelWidth, height: labelHeight)
+        }
+        let labelWidth: CGFloat = 100
+        let labelHeight: CGFloat = hasContextLabel ? 46 : 30
+        return CGRect(x: timer.anchorX - labelWidth / 2, y: timer.anchorY - labelHeight / 2, width: labelWidth, height: labelHeight)
     }
     
     func saveData() {
@@ -408,12 +469,85 @@ class BoardViewModel: ObservableObject {
     }
 }
 
+struct TimerOverlayModel: Identifiable {
+    let id: UUID
+    let frame: CGRect
+    let targetDate: Date
+    let penColor: Color
+    let label: String?
+    let isExpired: Bool
+    let isDismissed: Bool
+    let isDuration: Bool
+    let originalText: String
+}
+
+private struct TimerOverlayView: View {
+    let overlay: TimerOverlayModel
+    let now: Date
+
+    var body: some View {
+        VStack(spacing: overlay.label == nil ? 2 : 4) {
+            Text(timeRemainingString)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+            if let label = overlay.label {
+                Text(label)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color(.systemBackground).opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(overlay.penColor.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var timeRemainingString: String {
+        let remaining = Int(overlay.targetDate.timeIntervalSince(now))
+        if remaining <= 0 { return "Done" }
+        let hours = remaining / 3600
+        let minutes = (remaining % 3600) / 60
+        let seconds = remaining % 60
+        if hours > 0 { return String(format: "%02d:%02d:%02d", hours, minutes, seconds) }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+private struct ExpiredHighlightOverlay: View {
+    let penColor: Color
+    @State private var pulse = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(penColor.opacity(0.12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(penColor.opacity(0.45), lineWidth: 2)
+            )
+            .scaleEffect(pulse ? 1.04 : 0.96)
+            .opacity(pulse ? 1.0 : 0.65)
+            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
+            .onAppear { pulse = true }
+    }
+}
+
 // MARK: - ContentView
 
 struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
     @Environment(\.scenePhase) private var scenePhase
     @State private var showHint = true
+    private let feedbackManager = FeedbackManager()
+    @State private var notifiedExpiredIDs: Set<UUID> = []
+    @State private var nowTick: Date = Date()
     
     /// Persisted flag — `false` until the user has seen the welcome sheet.
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
@@ -421,14 +555,30 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             // Full-bleed canvas
-            CanvasView(
-                drawing: $viewModel.drawing,
-                timers: $viewModel.timers,
-                onAddTimers: viewModel.addTimers,
-                heartbeat: viewModel.heartbeat,
-                drawingVersion: viewModel.drawingVersion
-            )
-            .edgesIgnoringSafeArea(.all)
+            GeometryReader { _ in
+                ZStack(alignment: .topLeading) {
+                    CanvasView(
+                        drawing: $viewModel.drawing,
+                        timers: $viewModel.timers,
+                        onAddTimers: viewModel.addTimers,
+                        drawingVersion: viewModel.drawingVersion
+                    )
+                    .edgesIgnoringSafeArea(.all)
+
+                    ForEach(viewModel.timerOverlays) { overlay in
+                        TimerOverlayView(overlay: overlay, now: nowTick)
+                            .frame(width: overlay.frame.width, height: overlay.frame.height)
+                            .position(x: overlay.frame.midX, y: overlay.frame.midY)
+                    }
+
+                    ForEach(viewModel.timerOverlays.filter { $0.isExpired && !$0.isDismissed }) { overlay in
+                        ExpiredHighlightOverlay(penColor: overlay.penColor)
+                            .frame(width: overlay.frame.width + 16, height: overlay.frame.height + 16)
+                            .position(x: overlay.frame.midX, y: overlay.frame.midY)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
             
             // Floating top bar — Freeform-style minimal overlay
             VStack(spacing: 0) {
@@ -470,6 +620,20 @@ struct ContentView: View {
                     showHint = false
                 }
             }
+        }
+        .onReceive(viewModel.heartbeat) { tick in
+            nowTick = tick
+            for timer in viewModel.timers where timer.targetDate <= tick && !timer.isDismissed {
+                if !timer.isExpired {
+                    viewModel.markTimerExpired(timer.id)
+                }
+                if !notifiedExpiredIDs.contains(timer.id) {
+                    feedbackManager.timerExpired()
+                    notifiedExpiredIDs.insert(timer.id)
+                }
+            }
+            let activeIDs = Set(viewModel.timers.map { $0.id })
+            notifiedExpiredIDs = notifiedExpiredIDs.intersection(activeIDs)
         }
     }
     
