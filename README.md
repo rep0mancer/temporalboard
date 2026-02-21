@@ -14,7 +14,7 @@ An intuitive whiteboard app inspired by Apple Freeform — with a twist. Write a
    ```bash
    git clone https://github.com/rep0mancer/temporalboard.git
    ```
-2. **Open in Xcode** — open the project and select your target device or simulator.
+2. **Open in Xcode** — open `TemporalBoard.xcodeproj` and select your target device or simulator.
 3. **Build and run** — the app requires no external dependencies.
 4. **Allow notifications** — on first launch, tap "Allow" when prompted. This enables timer alerts when the app is in the background.
 
@@ -115,10 +115,13 @@ If the app is in the background, you receive a system notification instead.
 
 | File | Purpose |
 |---|---|
-| `TemporalBoardApp.swift` | App entry point, AppDelegate for notification permissions, `BoardViewModel` for state management and persistence, `ContentView` SwiftUI layout |
-| `CanvasView.swift` | `UIViewRepresentable` wrapping PencilKit, text recognition coordinator, timer/highlight overlay views, dot grid background |
-| `TimeParser.swift` | Regex-based time and duration parser with multi-language support |
-| `models.swift` | `BoardTimer` data model with Codable support, UIColor hex conversion helpers |
+| `TemporalBoard.xcodeproj` | Xcode project container with iOS app target and build settings |
+| `TemporalBoard/Info.plist` | App metadata, scene configuration, and permission usage strings |
+| `TemporalBoard/Assets.xcassets` | App icon and accent color asset catalog |
+| `TemporalBoard/TemporalBoardApp.swift` | App entry point, AppDelegate for notification permissions, `BoardViewModel` for state management and persistence, `ContentView` SwiftUI layout |
+| `TemporalBoard/CanvasView.swift` | `UIViewRepresentable` wrapping PencilKit, text recognition coordinator, timer/highlight overlay views, dot grid background |
+| `TemporalBoard/TimeParser.swift` | Regex-based time and duration parser with multi-language support |
+| `TemporalBoard/models.swift` | `BoardTimer` data model with Codable support, UIColor hex conversion helpers |
 
 ## License
 
