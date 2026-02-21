@@ -1,0 +1,365 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		4C663EE671B3ECC5C8C7D2DD /* CalendarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */; };
+		68C73213292ECAB08BEFC06D /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */; };
+		77DA55F72B9CA38E7BAD63B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */; };
+		78B8AFFBF9B2B6112457F28D /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 702252D7BA90FE0F10609149 /* Foundation.framework */; };
+		9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4901DDE4F4B41FB9E3D8298 /* models.swift */; };
+		A67E5AEB73BCD678FEC3040E /* TemporalBoardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */; };
+		E17766AA2F4A410300484BFD /* CloudKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17766A92F4A410300484BFD /* CloudKitManager.swift */; };
+		E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */; };
+		E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CalendarManager.swift; sourceTree = "<group>"; };
+		5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		702252D7BA90FE0F10609149 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		80A735F689BF0EAA546220CF /* TemporalBoard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TemporalBoard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		A4901DDE4F4B41FB9E3D8298 /* models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = models.swift; sourceTree = "<group>"; };
+		CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TimeParser.swift; sourceTree = "<group>"; };
+		D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemporalBoardApp.swift; sourceTree = "<group>"; };
+		E17766A92F4A410300484BFD /* CloudKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitManager.swift; sourceTree = "<group>"; };
+		F87A66EA09E8DD03BBF1E6C3 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7CD864A0BD0B5D2B0AC82E13 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				78B8AFFBF9B2B6112457F28D /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		18496E853F7726871E9EDA0D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				E7BF0F1B028CCCACE4370271 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		445A8CF79ABC101C6054853C /* TemporalBoard */ = {
+			isa = PBXGroup;
+			children = (
+				D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */,
+				A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */,
+				CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */,
+				A4901DDE4F4B41FB9E3D8298 /* models.swift */,
+				03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */,
+				E17766A92F4A410300484BFD /* CloudKitManager.swift */,
+				77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */,
+				5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */,
+				F87A66EA09E8DD03BBF1E6C3 /* Info.plist */,
+			);
+			path = TemporalBoard;
+			sourceTree = "<group>";
+		};
+		7C4605D119BBC1027A619473 = {
+			isa = PBXGroup;
+			children = (
+				82B3560B86E065376082DEBE /* Products */,
+				18496E853F7726871E9EDA0D /* Frameworks */,
+				445A8CF79ABC101C6054853C /* TemporalBoard */,
+			);
+			sourceTree = "<group>";
+		};
+		82B3560B86E065376082DEBE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				80A735F689BF0EAA546220CF /* TemporalBoard.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E7BF0F1B028CCCACE4370271 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				702252D7BA90FE0F10609149 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1FD7C3A6EEC084D93A64237E /* TemporalBoard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 19D455BD1C2F9E3B6B04AB42 /* Build configuration list for PBXNativeTarget "TemporalBoard" */;
+			buildPhases = (
+				F54613EA611AB0600E1372C6 /* Sources */,
+				7CD864A0BD0B5D2B0AC82E13 /* Frameworks */,
+				3110F11795D7C9016DFD2A0B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TemporalBoard;
+			productName = TemporalBoard;
+			productReference = 80A735F689BF0EAA546220CF /* TemporalBoard.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F25BA7CC661E4A4E30BE0DD2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 2620;
+			};
+			buildConfigurationList = A62134FFF672228A51E2D9DA /* Build configuration list for PBXProject "TemporalBoard" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 7C4605D119BBC1027A619473;
+			productRefGroup = 82B3560B86E065376082DEBE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1FD7C3A6EEC084D93A64237E /* TemporalBoard */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3110F11795D7C9016DFD2A0B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				77DA55F72B9CA38E7BAD63B7 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F54613EA611AB0600E1372C6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A67E5AEB73BCD678FEC3040E /* TemporalBoardApp.swift in Sources */,
+				E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */,
+				E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */,
+				9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */,
+				E17766AA2F4A410300484BFD /* CloudKitManager.swift in Sources */,
+				4C663EE671B3ECC5C8C7D2DD /* CalendarManager.swift in Sources */,
+				68C73213292ECAB08BEFC06D /* OnboardingView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		58812E68E35FF2FC78C7E9B8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = LLLJ84P67S;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		998B113487037177CD0A67BB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = LLLJ84P67S;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		A7AF74B8E2B75FDE9B77BA5F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = TemporalBoard/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.temporalboard.app;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A8889833BAB3C7FF453F97BA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = TemporalBoard/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.temporalboard.app;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		19D455BD1C2F9E3B6B04AB42 /* Build configuration list for PBXNativeTarget "TemporalBoard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A8889833BAB3C7FF453F97BA /* Release */,
+				A7AF74B8E2B75FDE9B77BA5F /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A62134FFF672228A51E2D9DA /* Build configuration list for PBXProject "TemporalBoard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				998B113487037177CD0A67BB /* Debug */,
+				58812E68E35FF2FC78C7E9B8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F25BA7CC661E4A4E30BE0DD2 /* Project object */;
+}
