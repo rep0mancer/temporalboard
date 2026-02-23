@@ -14,6 +14,7 @@
 		9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4901DDE4F4B41FB9E3D8298 /* models.swift */; };
 		A67E5AEB73BCD678FEC3040E /* TemporalBoardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */; };
 		E17766AA2F4A410300484BFD /* CloudKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17766A92F4A410300484BFD /* CloudKitManager.swift */; };
+		E17766AC2F4C853C00484BFD /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17766AB2F4C853C00484BFD /* SettingsView.swift */; };
 		E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */; };
 		E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */; };
 /* End PBXBuildFile section */
@@ -29,6 +30,7 @@
 		CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TimeParser.swift; sourceTree = "<group>"; };
 		D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemporalBoardApp.swift; sourceTree = "<group>"; };
 		E17766A92F4A410300484BFD /* CloudKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitManager.swift; sourceTree = "<group>"; };
+		E17766AB2F4C853C00484BFD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F87A66EA09E8DD03BBF1E6C3 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -62,6 +64,7 @@
 				03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */,
 				E17766A92F4A410300484BFD /* CloudKitManager.swift */,
 				77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */,
+				E17766AB2F4C853C00484BFD /* SettingsView.swift */,
 				5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */,
 				F87A66EA09E8DD03BBF1E6C3 /* Info.plist */,
 			);
@@ -158,6 +161,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A67E5AEB73BCD678FEC3040E /* TemporalBoardApp.swift in Sources */,
+				E17766AC2F4C853C00484BFD /* SettingsView.swift in Sources */,
 				E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */,
 				E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */,
 				9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */,

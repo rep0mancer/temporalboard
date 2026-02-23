@@ -358,6 +358,7 @@ struct ContentView: View {
     @StateObject private var viewModel = BoardViewModel()
     @Environment(\.scenePhase) private var scenePhase
     @State private var showHint = true
+    @State private var showSettings = false
     
     /// Persisted flag — `false` until the user has seen the welcome sheet.
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
@@ -399,6 +400,9 @@ struct ContentView: View {
         )) {
             OnboardingView(hasSeenOnboarding: $hasSeenOnboarding)
                 .interactiveDismissDisabled()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
         .task {
             viewModel.loadDataAsync()
@@ -485,6 +489,12 @@ struct ContentView: View {
             // Overflow menu
             if !viewModel.timers.isEmpty {
                 Menu {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    
                     if viewModel.expiredTimerCount > 0 {
                         Button(role: .destructive) {
                             withAnimation(.spring(response: 0.3)) {
@@ -538,5 +548,11 @@ struct ContentView: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
     }
 }
