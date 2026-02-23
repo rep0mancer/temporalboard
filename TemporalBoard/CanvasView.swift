@@ -16,6 +16,7 @@ struct CanvasView: UIViewRepresentable {
     let heartbeat: AnyPublisher<Date, Never>
     /// Version token from the ViewModel — changes whenever `drawing` is set.
     var drawingVersion: UUID
+    @AppStorage("showGrid") private var showGrid = true
     
     func makeUIView(context: Context) -> PKCanvasView {
         let canvasView = PKCanvasView()
@@ -25,10 +26,12 @@ struct CanvasView: UIViewRepresentable {
         canvasView.isOpaque = true
         
         // Freeform-style background: light warm white with dot grid
-        let bgView = DotGridBackgroundView()
-        bgView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        canvasView.insertSubview(bgView, at: 0)
-        canvasView.backgroundColor = .clear
+        if showGrid {
+            let bgView = DotGridBackgroundView()
+            bgView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            canvasView.insertSubview(bgView, at: 0)
+        }
+        canvasView.backgroundColor = showGrid ? .clear : .systemBackground
         
         // Allow infinite scrolling like Freeform
         canvasView.alwaysBounceVertical = true
