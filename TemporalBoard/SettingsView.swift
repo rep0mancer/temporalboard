@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
     @AppStorage("timerSound") private var timerSound = "default"
     @AppStorage("autoDismissTimers") private var autoDismissTimers = false
+    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = true
     
     var body: some View {
         NavigationStack {
@@ -55,7 +56,16 @@ struct SettingsView: View {
                 // MARK: - Data
                 Section("Data") {
                     Button("Export Board") { }
-                    Button("Clear All Data") { }
+                    
+                    Button("Reset Onboarding") {
+                        hasSeenOnboarding = false
+                    }
+                    .foregroundStyle(.orange)
+                    
+                    Button("Clear All Data") {
+                        // Clear all data
+                    }
+                    .foregroundStyle(.red)
                 }
                 
                 // MARK: - About
