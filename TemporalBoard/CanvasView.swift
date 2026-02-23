@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import PencilKit
 import Vision
+import CoreImage
 import AudioToolbox
 import AVFoundation
 import Combine
@@ -49,6 +50,7 @@ struct CanvasView: UIViewRepresentable {
         context.coordinator.canvasView = canvasView
         context.coordinator.toolPicker = toolPicker
         context.coordinator.backgroundView = bgView
+        context.coordinator.lastDrawingVersion = drawingVersion
         
         // Subscribe the coordinator to the single centralized heartbeat.
         // This replaces individual per-label Timers for energy efficiency.
@@ -81,7 +83,15 @@ struct CanvasView: UIViewRepresentable {
         // bounds remain identical but the drawing data differs.
         if context.coordinator.lastDrawingVersion != drawingVersion {
             context.coordinator.lastDrawingVersion = drawingVersion
-            uiView.drawing = drawing
+            if context.coordinator.isSyncingCanvasToModel {
+                // This update originated from PKCanvasView itself; do not write
+                // it back into the canvas or we can interrupt in-flight strokes.
+                context.coordinator.isSyncingCanvasToModel = false
+            } else {
+                context.coordinator.isApplyingModelDrawing = true
+                uiView.drawing = drawing
+                context.coordinator.isApplyingModelDrawing = false
+            }
         }
         context.coordinator.updateTimerViews(in: uiView, with: timers)
     }
@@ -98,6 +108,10 @@ struct CanvasView: UIViewRepresentable {
         var saveWorkItem: DispatchWorkItem?
         var recognitionToken: UUID?
         var timeParser = TimeParser()
+        var isApplyingModelDrawing = false
+        var isSyncingCanvasToModel = false
+        private let recognitionQueue = DispatchQueue(label: "CanvasView.recognition", qos: .userInitiated)
+        private let ciContext = CIContext(options: nil)
         
         weak var canvasView: PKCanvasView?
         var toolPicker: PKToolPicker?
@@ -112,6 +126,8 @@ struct CanvasView: UIViewRepresentable {
         
         // Track which timers already triggered haptic & audio feedback
         var hapticsTriggered: Set<UUID> = []
+        /// Tracks timers for which the "Create Reminder?" prompt was already shown.
+        var reminderPromptedTimerIDs: Set<UUID> = []
         
         // Dirty-rect tracking: stroke count at last recognition pass.
         // Used to determine which strokes are "new" so we only rasterize
@@ -167,24 +183,44 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - PKCanvasViewDelegate
         
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            guard !isApplyingModelDrawing else { return }
+            
             // Debounced save
             saveWorkItem?.cancel()
             let saveItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
                 DispatchQueue.main.async {
+                    self.isSyncingCanvasToModel = true
                     self.parent.drawing = canvasView.drawing
                 }
             }
             saveWorkItem = saveItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: saveItem)
             
-            // Debounce recognition — 1.5s after the user stops drawing
+            // Adaptive debounce: erasing should sync faster than handwriting input.
+            let currentStrokeCount = canvasView.drawing.strokes.count
+            let strokeDelta = currentStrokeCount - lastRecognizedStrokeCount
+            let recognitionDelay: TimeInterval
+            if strokeDelta < 0 {
+                // Erase operations should remove timers quickly.
+                recognitionDelay = 0.25
+            } else if strokeDelta == 0 {
+                // Edits that keep stroke count stable (e.g. lasso moves) still
+                // benefit from a short delay.
+                recognitionDelay = 0.6
+            } else {
+                // Slightly shorter than before to keep recognition responsive.
+                recognitionDelay = 0.9
+            }
+            
+            // Debounce recognition after the user stops drawing.
             recognitionWorkItem?.cancel()
             let recognitionItem = DispatchWorkItem { [weak self] in
-                self?.performRecognition(on: canvasView)
+                guard let self = self else { return }
+                self.performRecognition(on: canvasView)
             }
             recognitionWorkItem = recognitionItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: recognitionItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + recognitionDelay, execute: recognitionItem)
         }
         
         @objc private func handleAppWillResignActive() {
@@ -199,10 +235,12 @@ struct CanvasView: UIViewRepresentable {
             saveWorkItem?.cancel()
             guard let canvasView = canvasView else { return }
             if Thread.isMainThread {
+                isSyncingCanvasToModel = true
                 parent.drawing = canvasView.drawing
             } else {
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, let canvasView = self.canvasView else { return }
+                    self.isSyncingCanvasToModel = true
                     self.parent.drawing = canvasView.drawing
                 }
             }
@@ -211,20 +249,43 @@ struct CanvasView: UIViewRepresentable {
         // MARK: - Text Recognition
         
         func performRecognition(on canvasView: PKCanvasView) {
+            if !Thread.isMainThread {
+                DispatchQueue.main.async { [weak self, canvasView] in
+                    guard let self = self else { return }
+                    self.performRecognition(on: canvasView)
+                }
+                return
+            }
+            
+            // Main-thread extraction from PKCanvasView.
             let drawing = canvasView.drawing
             let allStrokes = drawing.strokes
             let currentStrokeCount = allStrokes.count
             
             // Nothing to recognize
             if allStrokes.isEmpty {
+                if !parent.timers.isEmpty {
+                    let eventIDsToDelete = parent.timers.compactMap { $0.calendarEventID }
+                    if !eventIDsToDelete.isEmpty {
+                        Task.detached(priority: .utility) {
+                            for eventID in eventIDsToDelete {
+                                CalendarManager.shared.deleteEvent(identifier: eventID)
+                            }
+                        }
+                    }
+                    parent.timers.removeAll()
+                    reminderPromptedTimerIDs.removeAll()
+                    hapticsTriggered.removeAll()
+                }
                 lastRecognizedStrokeCount = 0
                 return
             }
             
             let token = UUID()
             recognitionToken = token
-            let scale = canvasView.traitCollection.displayScale > 0 ? canvasView.traitCollection.displayScale : 2.0
-            let languages = recognitionLanguages()
+            let displayScale = canvasView.traitCollection.displayScale > 0 ? canvasView.traitCollection.displayScale : 2.0
+            // Higher OCR scale materially improves recognition for thin handwriting.
+            let scale = max(displayScale, 3.0)
             
             // --- Dirty-rect computation ---
             // Only rasterize the region that changed instead of the entire canvas
@@ -258,51 +319,176 @@ struct CanvasView: UIViewRepresentable {
             // Snapshot the count *before* dispatching so the next call can compare.
             lastRecognizedStrokeCount = currentStrokeCount
             
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Background work: only rasterization + Vision request execution.
+            recognitionQueue.async { [weak self] in
                 guard let self = self else { return }
+                guard self.recognitionToken == token else { return }
                 
-                // Rasterize only the dirty rect (or full bounds on a full scan).
-                let image = drawing.image(from: scanRect, scale: scale)
-                guard let cgImage = image.cgImage else { return }
+                let languages = self.recognitionLanguages()
+                let parseProbe = TimeParser()
                 
-                let request = VNRecognizeTextRequest { [weak self] request, error in
-                    guard let self = self,
-                          let observations = request.results as? [VNRecognizedTextObservation],
-                          self.recognitionToken == token else { return }
+                func runRecognition(level: VNRequestTextRecognitionLevel,
+                                    usesCorrection: Bool,
+                                    cgImage: CGImage) -> [VNRecognizedTextObservation] {
+                    var observations: [VNRecognizedTextObservation] = []
+                    let request = VNRecognizeTextRequest { request, _ in
+                        observations = request.results as? [VNRecognizedTextObservation] ?? []
+                    }
+                    request.recognitionLevel = level
+                    request.usesLanguageCorrection = usesCorrection
+                    request.automaticallyDetectsLanguage = true
+                    request.minimumTextHeight = 0.01
+                    if !languages.isEmpty {
+                        request.recognitionLanguages = languages
+                    }
                     
-                    DispatchQueue.main.async {
-                        self.processObservations(
-                            observations,
-                            in: scanRect,
-                            strokes: allStrokes,
-                            isFullScan: isFullScan
-                        )
+                    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                    do {
+                        try handler.perform([request])
+                    } catch {
+#if DEBUG
+                        print("[OCR] Vision request failed: \(error)")
+#endif
+                    }
+                    return observations
+                }
+                
+                func hasParseableCandidate(in observations: [VNRecognizedTextObservation]) -> Bool {
+                    for observation in observations {
+                        for candidate in observation.topCandidates(3) {
+                            if parseProbe.parseDetailed(text: candidate.string) != nil {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+                
+                func recognizeTimerText(in rect: CGRect) -> (observations: [VNRecognizedTextObservation], pass1Count: Int, pass2Count: Int) {
+                    let image = drawing.image(from: rect, scale: scale)
+                    guard let baseCGImage = image.cgImage else {
+                        return ([], 0, 0)
+                    }
+                    let preparedImage = self.preparedOCRImage(from: baseCGImage)
+                    
+                    // Pass 1: higher quality recognition.
+                    var observations = runRecognition(level: .accurate, usesCorrection: true, cgImage: preparedImage)
+                    let passOneCount = observations.count
+                    let passOneParseable = hasParseableCandidate(in: observations)
+                    
+                    // Pass 2 fallback: faster + no correction can help when pass 1
+                    // recognizes text but fails to produce parseable timer phrases.
+                    var passTwoCount = 0
+                    if observations.isEmpty || !passOneParseable {
+                        let fastObservations = runRecognition(level: .fast, usesCorrection: false, cgImage: preparedImage)
+                        passTwoCount = fastObservations.count
+                        let passTwoParseable = hasParseableCandidate(in: fastObservations)
+                        
+                        if passTwoParseable || observations.isEmpty {
+                            observations = fastObservations
+                        } else if !fastObservations.isEmpty && fastObservations.count > observations.count {
+                            observations = fastObservations
+                        }
+                    }
+                    
+                    return (observations, passOneCount, passTwoCount)
+                }
+                
+                var effectiveScanRect = scanRect
+                var effectiveIsFullScan = isFullScan
+                var result = recognizeTimerText(in: effectiveScanRect)
+                
+                // If a dirty-rect scan yields no text at all, retry once on full bounds.
+                // This recovers from occasional dirty-rect misses while preserving fast path.
+                if result.observations.isEmpty && !effectiveIsFullScan {
+                    let fullRect = drawing.bounds
+                    if !fullRect.isEmpty && !fullRect.isNull {
+                        effectiveScanRect = fullRect
+                        effectiveIsFullScan = true
+                        result = recognizeTimerText(in: fullRect)
                     }
                 }
                 
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = true
-                request.automaticallyDetectsLanguage = true
-                request.recognitionLanguages = languages
+                let observations = result.observations
+#if DEBUG
+                if observations.isEmpty {
+                    print("[OCR] No parseable timer text. pass1=\(result.pass1Count) pass2=\(result.pass2Count)")
+                }
+#endif
                 
-                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-                try? handler.perform([request])
+                guard self.recognitionToken == token else { return }
+                DispatchQueue.main.async {
+                    self.processObservations(
+                        observations,
+                        in: effectiveScanRect,
+                        strokes: allStrokes,
+                        isFullScan: effectiveIsFullScan
+                    )
+                }
             }
         }
         
+        private func preparedOCRImage(from cgImage: CGImage) -> CGImage {
+            let source = CIImage(cgImage: cgImage)
+            let whiteBackground = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+                .cropped(to: source.extent)
+            
+            // Flatten transparency and boost readability for thin handwriting.
+            let flattened = source.composited(over: whiteBackground)
+            let enhanced = flattened.applyingFilter(
+                "CIColorControls",
+                parameters: [
+                    kCIInputSaturationKey: 0.0,
+                    kCIInputContrastKey: 1.35,
+                    kCIInputBrightnessKey: 0.05
+                ]
+            )
+            
+            return ciContext.createCGImage(enhanced, from: enhanced.extent) ?? cgImage
+        }
+        
         private func recognitionLanguages() -> [String] {
-            var languages: [String] = []
+            let probeRequest = VNRecognizeTextRequest()
+            probeRequest.recognitionLevel = .accurate
+            let supportedRaw = (try? probeRequest.supportedRecognitionLanguages()) ?? ["en-US"]
+            
+            func key(_ language: String) -> String {
+                language.replacingOccurrences(of: "_", with: "-").lowercased()
+            }
+            
+            var supportedByKey: [String: String] = [:]
+            for supported in supportedRaw {
+                supportedByKey[key(supported)] = supported
+            }
+            
+            var candidates: [String] = []
+            
+            // Prioritize English fallback first for timer phrases.
+            candidates.append("en-US")
+            
             for identifier in Locale.preferredLanguages {
                 let normalized = Locale(identifier: identifier).identifier
-                if !normalized.isEmpty, !languages.contains(normalized) {
-                    languages.append(normalized)
+                if !normalized.isEmpty {
+                    candidates.append(normalized)
                 }
             }
-            let fallbacks = ["en-US", "de-DE"]
-            for fallback in fallbacks where !languages.contains(fallback) {
-                languages.append(fallback)
+            
+            // Keep German as an explicit fallback used by existing parser behavior.
+            candidates.append("de-DE")
+            
+            var result: [String] = []
+            for candidate in candidates {
+                if let supported = supportedByKey[key(candidate)],
+                   !result.contains(supported) {
+                    result.append(supported)
+                }
+                if result.count == 3 { break }
             }
-            return Array(languages.prefix(3))
+            
+            if result.isEmpty {
+                return Array(supportedRaw.prefix(3))
+            }
+            return result
         }
         
         /// - Parameters:
@@ -324,17 +510,77 @@ struct CanvasView: UIViewRepresentable {
             struct RecognizedText {
                 let text: String
                 let normalizedText: String
+                let normalizedCandidates: Set<String>
+                /// Canonicalized match token (e.g. "15min", "1330") when this
+                /// observation contains parseable timer text.
+                let matchedTimeKey: String?
                 let centerX: CGFloat
                 let centerY: CGFloat
                 let textRect: CGRect
+            }
+            
+            func normalized(_ value: String) -> String {
+                value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+            
+            func canonicalTimeKey(_ value: String) -> String {
+                let folded = value.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                let compact = folded.lowercased().filter { $0.isLetter || $0.isNumber }
+                return compact
+            }
+            
+            func matchedTimeKey(in text: String) -> String? {
+                let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clean.isEmpty,
+                      let parsed = timeParser.parseDetailed(text: clean) else { return nil }
+                let token = String(clean[parsed.matchRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !token.isEmpty else { return nil }
+                return canonicalTimeKey(token)
+            }
+            
+            func textMatchesTimer(_ timerText: String,
+                                  timerTimeKey: String?,
+                                  recognized: RecognizedText) -> Bool {
+                if recognized.normalizedCandidates.contains(timerText) {
+                    return true
+                }
+                
+                guard let timerTimeKey,
+                      let recognizedTimeKey = recognized.matchedTimeKey else { return false }
+                return timerTimeKey == recognizedTimeKey
             }
             
             var recognizedTexts: [RecognizedText] = []
             var newTimers: [BoardTimer] = []
             
             for observation in observations {
-                guard let candidate = observation.topCandidates(1).first else { continue }
-                let text = candidate.string
+                let candidates = observation.topCandidates(3)
+                guard !candidates.isEmpty else { continue }
+                
+                let candidateStrings = candidates.map(\.string)
+                let normalizedCandidates = Set(candidateStrings.map(normalized).filter { !$0.isEmpty })
+                guard let firstText = candidateStrings.first else { continue }
+                
+                var parsedText: String?
+                var parseResult: TimeParseResult?
+                for candidateText in candidateStrings {
+                    if let parsed = timeParser.parseDetailed(text: candidateText) {
+                        parsedText = candidateText
+                        parseResult = parsed
+                        break
+                    }
+                }
+                
+                let text = parsedText ?? firstText
+                let normalizedText = normalized(text)
+                let matchedTimeKeyValue: String? = {
+                    guard let parseResult,
+                          let parsedText else { return nil }
+                    let token = String(parsedText[parseResult.matchRange])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !token.isEmpty else { return nil }
+                    return canonicalTimeKey(token)
+                }()
                 
                 // Convert Vision coordinates (0,0 bottom-left) -> content coordinates
                 let boundingBox = observation.boundingBox
@@ -346,27 +592,30 @@ struct CanvasView: UIViewRepresentable {
                 let rectHeight = boundingBox.height * h
                 
                 let textRect = CGRect(x: x, y: y, width: rectWidth, height: rectHeight)
-                let centerX = x + rectWidth / 2
-                let centerY = y + rectHeight / 2
-                let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let centerX = textRect.midX
+                let centerY = textRect.midY
                 
                 recognizedTexts.append(RecognizedText(
                     text: text,
                     normalizedText: normalizedText,
+                    normalizedCandidates: normalizedCandidates,
+                    matchedTimeKey: matchedTimeKeyValue,
                     centerX: centerX,
                     centerY: centerY,
                     textRect: textRect
                 ))
                 
                 // Only create timers from parseable time expressions
-                guard let parseResult = timeParser.parseDetailed(text: text) else { continue }
+                guard let parseResult else { continue }
                 
                 // Avoid duplicates
                 let alreadyExists = parent.timers.contains { existing in
                     let dx = existing.anchorX - centerX
                     let dy = existing.anchorY - centerY
                     let distanceMatch = (dx*dx + dy*dy) < 2500
-                    let textMatch = normalizedText == existing.originalText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let existingText = normalized(existing.originalText)
+                    let textMatch = normalizedCandidates.contains(existingText)
+                        || normalizedCandidates.contains(where: { existingText.contains($0) || $0.contains(existingText) })
                     let timeMatch = abs(existing.targetDate.timeIntervalSince(parseResult.targetDate)) < 60
                     return distanceMatch && (textMatch || timeMatch)
                 }
@@ -382,7 +631,8 @@ struct CanvasView: UIViewRepresentable {
                         textRect: textRect,
                         isDuration: parseResult.isDuration,
                         penColorHex: penColor.hexString,
-                        label: parseResult.label
+                        label: parseResult.label,
+                        isExplicitDate: parseResult.isExplicitDate
                     )
                     newTimers.append(newTimer)
                 }
@@ -414,15 +664,18 @@ struct CanvasView: UIViewRepresentable {
                     
                     let timerText = timer.originalText
                         .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let timerTimeKey = matchedTimeKey(in: timer.originalText)
                     
                     // Is the timer still at its original location?
                     let stillPresent = recognizedTexts.contains { recognized in
                         let dx = timer.anchorX - recognized.centerX
                         let dy = timer.anchorY - recognized.centerY
                         let closeEnough = (dx * dx + dy * dy) < 2500
-                        let textMatch = timerText == recognized.normalizedText
-                            || timerText.contains(recognized.normalizedText)
-                            || recognized.normalizedText.contains(timerText)
+                        let textMatch = textMatchesTimer(
+                            timerText,
+                            timerTimeKey: timerTimeKey,
+                            recognized: recognized
+                        )
                         return closeEnough && textMatch
                     }
                     
@@ -438,8 +691,15 @@ struct CanvasView: UIViewRepresentable {
                     for (idx, recognized) in recognizedTexts.enumerated() {
                         guard !claimedRecognizedIndices.contains(idx) else { continue }
                         
-                        // Require an exact normalized-text match.
-                        guard timerText == recognized.normalizedText else { continue }
+                        // Require either an exact normalized-text match or the same
+                        // parsed time token (e.g. "15min") to support OCR variants.
+                        let exactTextMatch = recognized.normalizedCandidates.contains(timerText)
+                        let timeTokenMatch = {
+                            guard let timerTimeKey,
+                                  let recognizedTimeKey = recognized.matchedTimeKey else { return false }
+                            return timerTimeKey == recognizedTimeKey
+                        }()
+                        guard exactTextMatch || timeTokenMatch else { continue }
                         
                         // Must be away from the original anchor (the nearby
                         // case was already handled by the stillPresent check).
@@ -510,6 +770,7 @@ struct CanvasView: UIViewRepresentable {
                     
                     let timerText = timer.originalText
                         .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let timerTimeKey = matchedTimeKey(in: timer.originalText)
                     
                     // Check if any observation still matches this timer by both
                     // proximity (~50 px radius) AND text content.
@@ -517,9 +778,11 @@ struct CanvasView: UIViewRepresentable {
                         let dx = timer.anchorX - recognized.centerX
                         let dy = timer.anchorY - recognized.centerY
                         let closeEnough = (dx * dx + dy * dy) < 2500
-                        let textMatch = timerText == recognized.normalizedText
-                            || timerText.contains(recognized.normalizedText)
-                            || recognized.normalizedText.contains(timerText)
+                        let textMatch = textMatchesTimer(
+                            timerText,
+                            timerTimeKey: timerTimeKey,
+                            recognized: recognized
+                        )
                         return closeEnough && textMatch
                     }
                     
@@ -561,6 +824,9 @@ struct CanvasView: UIViewRepresentable {
                 // keyword-important).  Runs off the main thread; the
                 // returned eventIdentifier is written back on main.
                 scheduleCalendarEvents(for: newTimers)
+                
+                // Phase 3.6: For explicit future dates, offer Apple Reminders creation.
+                promptReminderCreation(for: newTimers)
             }
         }
         
@@ -592,6 +858,9 @@ struct CanvasView: UIViewRepresentable {
             let calendarManager = CalendarManager.shared
             
             for timer in timers {
+                // Explicit date entries use the Reminders opt-in flow instead of
+                // automatic calendar insertion to avoid duplicate system items.
+                guard !timer.isExplicitDate else { continue }
                 guard calendarManager.shouldCreateCalendarEvent(
                     targetDate: timer.targetDate,
                     label: timer.label
@@ -618,10 +887,120 @@ struct CanvasView: UIViewRepresentable {
             }
         }
         
+        // MARK: - Reminders Integration
+        
+        /// Presents an opt-in prompt for explicit future-date entries so the user
+        /// can create a native Apple Reminder for that occurrence.
+        private func promptReminderCreation(for timers: [BoardTimer]) {
+            let now = Date()
+            let candidates = timers.filter {
+                $0.isExplicitDate &&
+                $0.targetDate > now &&
+                !reminderPromptedTimerIDs.contains($0.id)
+            }
+            
+            guard !candidates.isEmpty else { return }
+            
+            for (index, timer) in candidates.enumerated() {
+                reminderPromptedTimerIDs.insert(timer.id)
+                DispatchQueue.main.asyncAfter(deadline: .now() + (Double(index) * 0.35)) { [weak self] in
+                    self?.presentReminderPrompt(for: timer)
+                }
+            }
+        }
+        
+        private func presentReminderPrompt(for timer: BoardTimer) {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            
+            let titleText = timer.label ?? timer.originalText
+            let dueText = formatter.string(from: timer.targetDate)
+            
+            let alert = UIAlertController(
+                title: "Create Reminder?",
+                message: "\"\(titleText)\"\n\(dueText)",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Not now", style: .cancel))
+            alert.addAction(UIAlertAction(title: "Create", style: .default) { [weak self] _ in
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    let reminderID = await CalendarManager.shared.addReminder(
+                        title: titleText,
+                        date: timer.targetDate
+                    )
+                    await MainActor.run {
+                        if reminderID == nil {
+                            self.presentInfoAlert(
+                                title: "Reminder Not Created",
+                                message: "Please allow Reminders access in Settings and try again."
+                            )
+                        }
+                    }
+                }
+            })
+            
+            presentAlert(alert)
+        }
+        
         // MARK: - Timer & Highlight Views Management
+        
+        /// Approximates the bounding rect of the matched time-expression within
+        /// the full recognized text-line rect using character-position ratios.
+        private func matchedTimeRect(in text: String,
+                                     matchRange: Range<String.Index>,
+                                     fullRect: CGRect) -> CGRect {
+            guard !text.isEmpty, fullRect.width > 0, fullRect.height > 0 else { return fullRect }
+            
+            let totalCount = text.count
+            guard totalCount > 0 else { return fullRect }
+            
+            let prefixCount = text.distance(from: text.startIndex, to: matchRange.lowerBound)
+            let matchCount = max(1, text.distance(from: matchRange.lowerBound, to: matchRange.upperBound))
+            
+            let leadingFraction = CGFloat(prefixCount) / CGFloat(totalCount)
+            let widthFraction = CGFloat(matchCount) / CGFloat(totalCount)
+            
+            var x = fullRect.minX + fullRect.width * leadingFraction
+            var width = fullRect.width * widthFraction
+            
+            let minimumWidth = min(fullRect.width, max(28, fullRect.height * 1.4))
+            width = max(width, minimumWidth)
+            
+            if x + width > fullRect.maxX {
+                x = max(fullRect.minX, fullRect.maxX - width)
+            }
+            
+            return CGRect(x: x, y: fullRect.minY, width: width, height: fullRect.height)
+        }
+        
+        private func inlineTimerRect(for timer: BoardTimer) -> CGRect {
+            let fullRect = timer.textRect
+            guard fullRect != .zero else { return fullRect }
+            
+            let cleanText = timer.originalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanText.isEmpty,
+                  let parseResult = timeParser.parseDetailed(text: cleanText) else {
+                return fullRect
+            }
+            
+            return matchedTimeRect(in: cleanText, matchRange: parseResult.matchRange, fullRect: fullRect)
+        }
+        
+        private func scaledContentRect(_ rect: CGRect, zoomScale: CGFloat) -> CGRect {
+            guard rect != .zero else { return rect }
+            return CGRect(
+                x: rect.origin.x * zoomScale,
+                y: rect.origin.y * zoomScale,
+                width: rect.size.width * zoomScale,
+                height: rect.size.height * zoomScale
+            )
+        }
         
         func updateTimerViews(in canvasView: PKCanvasView, with timers: [BoardTimer]) {
             let currentIDs = Set(timers.map { $0.id })
+            let zoomScale = max(canvasView.zoomScale, 0.01)
             
             // Remove views for deleted timers
             for id in timerLabels.keys where !currentIDs.contains(id) {
@@ -645,13 +1024,14 @@ struct CanvasView: UIViewRepresentable {
                         label.targetDate = timer.targetDate
                     }
                     label.updatePenColor(penColor)
-                    label.contextLabelText = timer.label
+                    // Keep the canvas inline: only replace the time expression.
+                    label.contextLabelText = nil
                 } else {
                     label = TimerLabel(
                         timerID: timer.id,
                         targetDate: timer.targetDate,
                         penColor: penColor,
-                        contextLabel: timer.label
+                        contextLabel: nil
                     )
                     label.onExpired = { [weak self] timerID in
                         self?.handleTimerExpired(timerID: timerID)
@@ -669,28 +1049,28 @@ struct CanvasView: UIViewRepresentable {
                 }
                 
                 // Center the label directly over the handwriting to mask/replace it.
-                // The frame must fully cover the original textRect bounding box.
-                // When a contextual label is present, add extra height.
-                let hasContextLabel = timer.label != nil
-                if timer.textRect != .zero {
-                    let padding: CGFloat = 4
-                    let extraHeight: CGFloat = hasContextLabel ? 18 : 0
-                    let labelWidth  = max(timer.textRect.width  + padding * 2, 80)
-                    let labelHeight = max(timer.textRect.height + padding * 2 + extraHeight,
-                                          hasContextLabel ? 46 : 30)
+                // Keep it compact so only the handwritten time expression is replaced.
+                let displayRect = scaledContentRect(inlineTimerRect(for: timer), zoomScale: zoomScale)
+                if displayRect != .zero {
+                    let horizontalPadding: CGFloat = 10
+                    let verticalPadding: CGFloat = 3
+                    let labelWidth  = max(displayRect.width + horizontalPadding * 2, 64)
+                    let labelHeight = max(displayRect.height + verticalPadding * 2, 22)
                     label.frame = CGRect(
-                        x: timer.textRect.midX - labelWidth  / 2,
-                        y: timer.textRect.midY - labelHeight / 2,
+                        x: displayRect.midX - labelWidth  / 2,
+                        y: displayRect.midY - labelHeight / 2,
                         width:  labelWidth,
                         height: labelHeight
                     )
                 } else {
                     // Fallback when textRect is unavailable — center on anchor point
-                    let labelWidth: CGFloat = 100
-                    let labelHeight: CGFloat = hasContextLabel ? 46 : 30
+                    let labelWidth: CGFloat = 68
+                    let labelHeight: CGFloat = 24
+                    let anchorX = timer.anchorX * zoomScale
+                    let anchorY = timer.anchorY * zoomScale
                     label.frame = CGRect(
-                        x: timer.anchorX - labelWidth  / 2,
-                        y: timer.anchorY - labelHeight / 2,
+                        x: anchorX - labelWidth  / 2,
+                        y: anchorY - labelHeight / 2,
                         width:  labelWidth,
                         height: labelHeight
                     )
@@ -698,8 +1078,9 @@ struct CanvasView: UIViewRepresentable {
                 
                 // --- Highlight Overlay ---
                 let isExpiredNow = timer.targetDate <= Date()
+                let highlightRect = scaledContentRect(timer.textRect, zoomScale: zoomScale)
                 
-                if isExpiredNow && !timer.isDismissed && timer.textRect != .zero {
+                if isExpiredNow && !timer.isDismissed && highlightRect != .zero {
                     let highlight: HighlightOverlayView
                     if let existing = highlightViews[timer.id] {
                         highlight = existing
@@ -717,7 +1098,7 @@ struct CanvasView: UIViewRepresentable {
                         highlightViews[timer.id] = highlight
                     }
                     let padding: CGFloat = 8
-                    highlight.frame = timer.textRect.insetBy(dx: -padding, dy: -padding)
+                    highlight.frame = highlightRect.insetBy(dx: -padding, dy: -padding)
                     highlight.startAnimating()
                 } else {
                     if let existing = highlightViews[timer.id] {
@@ -786,12 +1167,21 @@ struct CanvasView: UIViewRepresentable {
             let tapLocation = gesture.location(in: canvasView)
             
             for (timerID, label) in timerLabels {
-                if label.frame.contains(tapLocation) {
+                let contentPoint = CGPoint(
+                    x: tapLocation.x + canvasView.bounds.origin.x,
+                    y: tapLocation.y + canvasView.bounds.origin.y
+                )
+                if label.frame.contains(contentPoint) {
                     guard let timer = parent.timers.first(where: { $0.id == timerID }) else { continue }
                     presentTimerActionSheet(for: timer)
                     return
                 }
             }
+        }
+        
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            guard let canvasView = canvasView else { return }
+            updateTimerViews(in: canvasView, with: parent.timers)
         }
         
         // MARK: - UIGestureRecognizerDelegate
@@ -934,11 +1324,15 @@ struct CanvasView: UIViewRepresentable {
                 // Re-extract the contextual label from the edited text.
                 if let parseResult = self.timeParser.parseDetailed(text: newText) {
                     updatedTimers[index].label = parseResult.label
+                    updatedTimers[index].isExplicitDate = parseResult.isExplicitDate
                 } else {
                     updatedTimers[index].label = nil
+                    updatedTimers[index].isExplicitDate = false
                 }
                 self.hapticsTriggered.remove(timerID)
+                let editedTimer = updatedTimers[index]
                 self.parent.timers = updatedTimers
+                self.promptReminderCreation(for: [editedTimer])
             }
         }
         
@@ -963,6 +1357,12 @@ struct CanvasView: UIViewRepresentable {
         
         private func presentValidationAlert(message: String) {
             let alert = UIAlertController(title: "Invalid Time", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presentAlert(alert)
+        }
+        
+        private func presentInfoAlert(title: String, message: String) {
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "OK", style: .default))
             presentAlert(alert)
         }
@@ -1201,6 +1601,7 @@ class TimerLabel: UIView {
     // Sub-views
     private let contextLabelView = UILabel()
     private let countdownLabel = UILabel()
+    private let dotPatternLayer = CAShapeLayer()
     
     private var isBlinking = false
     private var expiredCallbackFired = false
@@ -1210,8 +1611,15 @@ class TimerLabel: UIView {
     private static let canvasBackgroundColor: UIColor = UIColor { trait in
         trait.userInterfaceStyle == .dark
             ? UIColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
-            : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1.0)
+            : UIColor(red: 0.985, green: 0.979, blue: 0.968, alpha: 1.0)
     }
+    private static let canvasDotColor: UIColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.08)
+            : UIColor(white: 0.0, alpha: 0.08)
+    }
+    private static let dotSpacing: CGFloat = 24
+    private static let dotRadius: CGFloat = 1
     
     init(timerID: UUID, targetDate: Date, penColor: UIColor = .label, contextLabel: String? = nil) {
         self.timerID = timerID
@@ -1238,13 +1646,69 @@ class TimerLabel: UIView {
         contextLabelView.textColor = penColor.withAlphaComponent(0.55)
     }
     
-    private func setupAppearance() {
-        // Canvas-matching background masks the ink underneath
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) {
+            refreshCanvasMaskAppearance()
+        }
+    }
+    
+    private func refreshCanvasMaskAppearance() {
         backgroundColor = Self.canvasBackgroundColor
+        dotPatternLayer.fillColor = Self.canvasDotColor.cgColor
+    }
+    
+    private func updateDotPatternPath() {
+        let bounds = self.bounds
+        guard bounds.width > 0, bounds.height > 0 else {
+            dotPatternLayer.path = nil
+            return
+        }
+        
+        dotPatternLayer.frame = bounds
+        let spacing = Self.dotSpacing
+        let radius = Self.dotRadius
+        
+        // Align dots to the global board grid so the mask blends seamlessly.
+        let originX = frame.minX
+        let originY = frame.minY
+        let startGlobalX = floor(originX / spacing) * spacing
+        let startGlobalY = floor(originY / spacing) * spacing
+        let firstLocalX = startGlobalX - originX
+        let firstLocalY = startGlobalY - originY
+        
+        let path = UIBezierPath()
+        var x = firstLocalX
+        while x <= bounds.width {
+            var y = firstLocalY
+            while y <= bounds.height {
+                path.append(UIBezierPath(
+                    ovalIn: CGRect(
+                        x: x - radius,
+                        y: y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    )
+                ))
+                y += spacing
+            }
+            x += spacing
+        }
+        
+        dotPatternLayer.path = path.cgPath
+    }
+    
+    private func setupAppearance() {
+        // Canvas-matching background masks the ink underneath.
+        refreshCanvasMaskAppearance()
         layer.cornerRadius = 4
         layer.borderWidth = 0
         clipsToBounds = true
         layer.shadowOpacity = 0
+        
+        dotPatternLayer.contentsScale = UIScreen.main.scale
+        dotPatternLayer.fillColor = Self.canvasDotColor.cgColor
+        layer.insertSublayer(dotPatternLayer, at: 0)
         
         // --- Context label (small, above countdown) ---
         contextLabelView.font = UIFont(name: "Noteworthy", size: 11)
@@ -1260,6 +1724,10 @@ class TimerLabel: UIView {
             ?? .systemFont(ofSize: 20, weight: .bold)
         countdownLabel.textColor = penColor
         countdownLabel.textAlignment = .center
+        countdownLabel.adjustsFontSizeToFitWidth = true
+        countdownLabel.minimumScaleFactor = 0.72
+        countdownLabel.lineBreakMode = .byClipping
+        countdownLabel.baselineAdjustment = .alignCenters
         addSubview(countdownLabel)
         
         updateDisplay()
@@ -1267,6 +1735,7 @@ class TimerLabel: UIView {
     
     override func layoutSubviews() {
         super.layoutSubviews()
+        updateDotPatternPath()
         
         if contextLabelText != nil && !contextLabelView.isHidden {
             let contextHeight: CGFloat = 15
@@ -1289,8 +1758,9 @@ class TimerLabel: UIView {
         } else {
             contextLabelView.frame = .zero
             countdownLabel.frame = bounds
-            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: 20)
-                ?? .systemFont(ofSize: 20, weight: .bold)
+            let fontSize = max(12, min(bounds.height * 0.78, 28))
+            countdownLabel.font = UIFont(name: "Noteworthy-Bold", size: fontSize)
+                ?? .systemFont(ofSize: fontSize, weight: .bold)
         }
     }
     
@@ -1300,8 +1770,8 @@ class TimerLabel: UIView {
         let now = Date()
         let remaining = targetDate.timeIntervalSince(now)
         
-        // Background always matches the canvas to mask the handwriting underneath.
-        backgroundColor = Self.canvasBackgroundColor
+        // Keep mask style in sync with the current trait/environment.
+        refreshCanvasMaskAppearance()
         
         if remaining <= 0 {
             // Overtime display
@@ -1310,11 +1780,11 @@ class TimerLabel: UIView {
             if overtime > 3600 {
                 let h = Int(overtime) / 3600
                 let m = (Int(overtime) % 3600) / 60
-                countdownLabel.text = " \(prefix)\(h)h \(String(format: "%02d", m))m "
+                countdownLabel.text = "\(prefix)\(h)h \(String(format: "%02d", m))m"
             } else {
                 let m = Int(overtime) / 60
                 let s = Int(overtime) % 60
-                countdownLabel.text = " \(prefix)\(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = "\(prefix)\(String(format: "%02d:%02d", m, s))"
             }
             
             countdownLabel.textColor = .systemRed
@@ -1331,11 +1801,11 @@ class TimerLabel: UIView {
             if remaining > 3600 {
                 let h = Int(remaining) / 3600
                 let m = (Int(remaining) % 3600) / 60
-                countdownLabel.text = " \(String(format: "%dh %02dm", h, m)) "
+                countdownLabel.text = String(format: "%dh %02dm", h, m)
             } else {
                 let m = Int(remaining) / 60
                 let s = Int(remaining) % 60
-                countdownLabel.text = " \(String(format: "%02d:%02d", m, s)) "
+                countdownLabel.text = String(format: "%02d:%02d", m, s)
             }
             
             // Text color transitions based on urgency

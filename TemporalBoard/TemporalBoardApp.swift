@@ -59,7 +59,6 @@ class BoardViewModel: ObservableObject {
         didSet {
             drawingVersion = UUID()
             scheduleSaveDrawing()
-            scheduleCloudSave()
         }
     }
     /// Lightweight version token that changes every time `drawing` is set.
@@ -70,7 +69,6 @@ class BoardViewModel: ObservableObject {
         didSet {
             scheduleSaveTimers()
             scheduleNotifications()
-            scheduleCloudSave()
         }
     }
     
@@ -120,11 +118,7 @@ class BoardViewModel: ObservableObject {
         timersURL = docs.appendingPathComponent("timers.json")
         // Data loading is deferred to loadDataAsync() to avoid blocking the main thread.
         
-        // Wire up CloudKit: listen for remote changes and initialize the zone.
-        CloudKitManager.shared.onRemoteChange = { [weak self] in
-            self?.pullFromCloud()
-        }
-        CloudKitManager.shared.setup()
+        // CloudKit disabled for local-only testing.
     }
     
     func updateTimers(_ newTimers: [BoardTimer]) {
@@ -180,11 +174,8 @@ class BoardViewModel: ObservableObject {
             return
         }
         
-        // Best-effort cloud push alongside the local save.
-        pushToCloud()
-        
         // Snapshot current state on the main thread before dispatching IO.
-        let drawingData = drawing.dataRepresentation()
+        let drawingSnapshot = drawing
         let timersSnapshot = timers
         let drawingURL = self.drawingURL
         let timersURL = self.timersURL
@@ -196,6 +187,7 @@ class BoardViewModel: ObservableObject {
         
         group.enter()
         ioQueue.async {
+            let drawingData = drawingSnapshot.dataRepresentation()
             try? drawingData.write(to: drawingURL, options: .atomic)
             group.leave()
         }
@@ -226,8 +218,9 @@ class BoardViewModel: ObservableObject {
     private func saveDrawing(immediately: Bool) {
         guard !isLoading else { return }
         drawingSaveWorkItem?.cancel()
-        let data = drawing.dataRepresentation()
+        let drawingSnapshot = drawing
         let workItem = DispatchWorkItem { [drawingURL] in
+            let data = drawingSnapshot.dataRepresentation()
             try? data.write(to: drawingURL, options: .atomic)
         }
         drawingSaveWorkItem = workItem
@@ -285,9 +278,6 @@ class BoardViewModel: ObservableObject {
                     self.timers = self.normalizeTimers(from: timers)
                 }
                 self.isLoading = false
-                
-                // Pull latest from iCloud (applies only if cloud data is newer).
-                self.pullFromCloud()
             }
         }
     }
@@ -309,67 +299,21 @@ class BoardViewModel: ObservableObject {
     /// Debounced cloud save — waits 3 seconds after the last change before
     /// pushing, so rapid edits are batched into a single upload.
     private func scheduleCloudSave() {
-        guard !isLoading, !suppressCloudPush else { return }
-        lastLocalChangeDate = Date()
-        cloudSaveWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.pushToCloud()
-        }
-        cloudSaveWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: item)
+        // Cloud sync intentionally disabled for local-only testing.
+        return
     }
     
     /// Snapshot the current board state and upload it to iCloud.
     private func pushToCloud() {
-        let drawingData = drawing.dataRepresentation()
-        guard let timersData = try? JSONEncoder().encode(timers) else { return }
-        
-        CloudKitManager.shared.save(
-            drawingData: drawingData,
-            timersData: timersData
-        ) { _ in }
+        // Cloud sync intentionally disabled for local-only testing.
+        return
     }
     
     /// Fetch the latest board from iCloud.  Applies the cloud data only
     /// when it is newer than the last local modification.
     func pullFromCloud() {
-        guard !isLoading else { return }
-        
-        CloudKitManager.shared.fetch { [weak self] snapshot in
-            guard let self = self, let snapshot = snapshot else { return }
-            guard let cloudDate = snapshot.lastModified,
-                  cloudDate > self.lastLocalChangeDate else { return }
-            
-            DispatchQueue.main.async {
-                // Cancel any pending debounced cloud push.  Without this,
-                // a local change made while the fetch was in flight could
-                // overwrite the newer cloud data we're about to apply.
-                self.cloudSaveWorkItem?.cancel()
-                self.cloudSaveWorkItem = nil
-                
-                // suppressCloudPush prevents the incoming data from being
-                // echoed back to iCloud.  Local saves still happen so the
-                // on-disk cache stays fresh.
-                self.suppressCloudPush = true
-                
-                if let data = snapshot.drawingData,
-                   let cloudDrawing = try? PKDrawing(data: data) {
-                    self.drawing = cloudDrawing
-                }
-                if let data = snapshot.timersData,
-                   let cloudTimers = try? JSONDecoder().decode([BoardTimer].self, from: data) {
-                    self.timers = self.normalizeTimers(from: cloudTimers)
-                }
-                
-                // Advance the local timestamp to the cloud's value so that
-                // the state we now hold is correctly baselined.  Future
-                // local edits will set a newer date, and subsequent pulls
-                // won't re-apply this same snapshot.
-                self.lastLocalChangeDate = cloudDate
-                
-                self.suppressCloudPush = false
-            }
-        }
+        // Cloud sync intentionally disabled for local-only testing.
+        return
     }
     
     // MARK: - Local Notifications
@@ -464,7 +408,7 @@ struct ContentView: View {
                 viewModel.saveData()
             }
         }
-        .onChange(of: viewModel.timers) { _ in
+        .onChange(of: viewModel.timers.count) { _ in
             if !viewModel.timers.isEmpty {
                 withAnimation(.easeOut(duration: 0.4)) {
                     showHint = false

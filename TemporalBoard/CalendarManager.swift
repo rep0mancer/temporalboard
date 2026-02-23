@@ -32,6 +32,11 @@ final class CalendarManager {
         EKEventStore.authorizationStatus(for: .event)
     }
     
+    /// Current authorization status for Reminders.
+    var remindersAuthorizationStatus: EKAuthorizationStatus {
+        EKEventStore.authorizationStatus(for: .reminder)
+    }
+    
     /// Request calendar access.  Returns `true` when authorized.
     /// Handles `.authorized`, `.denied`, `.notDetermined`, and `.fullAccess` /
     /// `.writeOnly` introduced in iOS 17.
@@ -64,6 +69,36 @@ final class CalendarManager {
             // Covers `.fullAccess` / `.writeOnly` on iOS 17+.
             // `.fullAccess` is what we need.  `.writeOnly` still allows
             // creating events but not reading them back — acceptable.
+            return true
+        }
+    }
+    
+    /// Request Reminders access. Returns `true` when authorized.
+    @discardableResult
+    func requestRemindersAccess() async -> Bool {
+        let status = remindersAuthorizationStatus
+        
+        switch status {
+        case .authorized:
+            return true
+        case .denied, .restricted:
+            return false
+        case .notDetermined:
+            if #available(iOS 17.0, *) {
+                do {
+                    return try await store.requestFullAccessToReminders()
+                } catch {
+                    return false
+                }
+            } else {
+                do {
+                    return try await store.requestAccess(to: .reminder)
+                } catch {
+                    return false
+                }
+            }
+        default:
+            // Covers `.fullAccess` / `.writeOnly` on iOS 17+.
             return true
         }
     }
@@ -122,6 +157,34 @@ final class CalendarManager {
         do {
             try store.save(event, span: .thisEvent)
             return event.eventIdentifier
+        } catch {
+            return nil
+        }
+    }
+    
+    // MARK: - Add Reminder
+    
+    /// Creates a reminder in the user's default Reminders list at the given date.
+    /// - Returns: The reminder identifier on success, or `nil` on failure.
+    func addReminder(title: String, date: Date) async -> String? {
+        guard await requestRemindersAccess() else { return nil }
+        guard let defaultCalendar = store.defaultCalendarForNewReminders() else { return nil }
+        
+        let reminder = EKReminder(eventStore: store)
+        reminder.calendar = defaultCalendar
+        reminder.title = title
+        reminder.notes = "Created by TemporalBoard"
+        reminder.priority = 5
+        
+        reminder.dueDateComponents = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: date
+        )
+        reminder.addAlarm(EKAlarm(absoluteDate: date))
+        
+        do {
+            try store.save(reminder, commit: true)
+            return reminder.calendarItemIdentifier
         } catch {
             return nil
         }

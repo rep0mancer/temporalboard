@@ -16,12 +16,14 @@ final class CloudKitManager {
     
     // MARK: - Configuration
     
-    private let container = CKContainer.default()
+    // Local-only mode:
+    // Keep CloudKit code in the project, but never initialize container/database.
+    private lazy var container: CKContainer? = nil
     private let zoneID = CKRecordZone.ID(zoneName: "TemporalBoardZone")
     private let recordType = "Board"
     private let recordName = "main-board"
     
-    private var privateDB: CKDatabase { container.privateCloudDatabase }
+    private var privateDB: CKDatabase? { nil }
     private var recordID: CKRecord.ID {
         CKRecord.ID(recordName: recordName, zoneID: zoneID)
     }
@@ -40,15 +42,9 @@ final class CloudKitManager {
     /// Check iCloud availability, create the custom zone, and subscribe
     /// to remote changes.  Safe to call multiple times.
     func setup() {
-        container.accountStatus { [weak self] status, _ in
-            guard let self = self else { return }
-            guard status == .available else {
-                self.isAvailable = false
-                return
-            }
-            self.isAvailable = true
-            self.createZoneIfNeeded()
-        }
+        // Cloud sync intentionally disabled for local-only testing.
+        isAvailable = false
+        return
     }
     
     private func createZoneIfNeeded() {
@@ -60,7 +56,7 @@ final class CloudKitManager {
             }
         }
         op.qualityOfService = .utility
-        privateDB.add(op)
+        privateDB?.add(op)
     }
     
     private func subscribeToChanges() {
@@ -69,7 +65,7 @@ final class CloudKitManager {
         info.shouldSendContentAvailable = true
         sub.notificationInfo = info
         
-        privateDB.save(sub) { _, error in
+        privateDB?.save(sub) { _, error in
             // .serverRejectedRequest means the subscription already exists — OK.
             if let ck = error as? CKError, ck.code != .serverRejectedRequest {
                 print("[CloudKit] Subscription error: \(ck.localizedDescription)")
@@ -84,52 +80,9 @@ final class CloudKitManager {
     func save(drawingData: Data,
               timersData: Data,
               completion: @escaping (Bool) -> Void) {
-        guard isAvailable else { completion(false); return }
-        
-        // Fetch the existing record first so we carry the server change tag
-        // and avoid "server record changed" conflicts on save.
-        privateDB.fetch(withRecordID: recordID) { [weak self] existing, fetchError in
-            guard let self = self else { completion(false); return }
-            
-            let record: CKRecord
-            if let existing = existing {
-                record = existing
-            } else if let ckError = fetchError as? CKError,
-                      ckError.code == .unknownItem {
-                // Record doesn't exist yet — create a fresh one.
-                record = CKRecord(recordType: self.recordType, recordID: self.recordID)
-            } else if let fetchError = fetchError {
-                // Any other fetch error (network, auth, quota, etc.) —
-                // fail early instead of masking the root cause.
-                print("[CloudKit] Pre-save fetch failed: \(fetchError.localizedDescription)")
-                completion(false)
-                return
-            } else {
-                record = CKRecord(recordType: self.recordType, recordID: self.recordID)
-            }
-            
-            // Drawing → CKAsset via a temporary file.
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".drawing")
-            do {
-                try drawingData.write(to: tempURL)
-            } catch {
-                completion(false)
-                return
-            }
-            
-            record["drawingAsset"] = CKAsset(fileURL: tempURL)
-            record["timersJSON"]   = timersData as NSData
-            record["lastModified"] = Date() as NSDate
-            
-            self.privateDB.save(record) { _, error in
-                try? FileManager.default.removeItem(at: tempURL)
-                if let error = error {
-                    print("[CloudKit] Save failed: \(error.localizedDescription)")
-                }
-                completion(error == nil)
-            }
-        }
+        // Cloud sync intentionally disabled for local-only testing.
+        completion(true)
+        return
     }
     
     // MARK: - Fetch
@@ -143,37 +96,9 @@ final class CloudKitManager {
     
     /// Pull the latest board from the private iCloud database.
     func fetch(completion: @escaping (BoardSnapshot?) -> Void) {
-        guard isAvailable else { completion(nil); return }
-        
-        privateDB.fetch(withRecordID: recordID) { record, error in
-            if let ck = error as? CKError, ck.code == .unknownItem {
-                // No record yet — first sync from this account.
-                completion(BoardSnapshot(drawingData: nil,
-                                         timersData: nil,
-                                         lastModified: nil))
-                return
-            }
-            guard let record = record else {
-                if let error = error {
-                    print("[CloudKit] Fetch failed: \(error.localizedDescription)")
-                }
-                completion(nil)
-                return
-            }
-            
-            var drawingData: Data?
-            if let asset = record["drawingAsset"] as? CKAsset,
-               let url = asset.fileURL {
-                drawingData = try? Data(contentsOf: url)
-            }
-            
-            let timersData = record["timersJSON"] as? Data
-            let lastModified = record["lastModified"] as? Date
-            
-            completion(BoardSnapshot(drawingData: drawingData,
-                                     timersData: timersData,
-                                     lastModified: lastModified))
-        }
+        // Cloud sync intentionally disabled for local-only testing.
+        completion(nil)
+        return
     }
     
     // MARK: - Remote Notifications

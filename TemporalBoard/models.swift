@@ -25,6 +25,10 @@ struct BoardTimer: Identifiable, Codable {
     /// EventKit event identifier when the timer has been added to the iOS
     /// Calendar (long-term or keyword-important timers). `nil` otherwise.
     var calendarEventID: String?
+    /// True when the recognized time came from an explicit date expression
+    /// (e.g. "24.02 10:00", "24. Februar 10:00"), not just a relative duration
+    /// or standalone clock time.
+    var isExplicitDate: Bool = false
     
     // MARK: - Codable conformance for CGRect
     
@@ -32,12 +36,12 @@ struct BoardTimer: Identifiable, Codable {
         case id, originalText, targetDate, anchorX, anchorY
         case textRectX, textRectY, textRectW, textRectH
         case isExpired, isDuration, penColorHex, isDismissed
-        case label, calendarEventID
+        case label, calendarEventID, isExplicitDate
     }
     
     init(originalText: String, targetDate: Date, anchorX: CGFloat, anchorY: CGFloat,
          textRect: CGRect = .zero, isDuration: Bool = true, penColorHex: String = "#000000",
-         label: String? = nil, calendarEventID: String? = nil) {
+         label: String? = nil, calendarEventID: String? = nil, isExplicitDate: Bool = false) {
         self.originalText = originalText
         self.targetDate = targetDate
         self.anchorX = anchorX
@@ -47,6 +51,7 @@ struct BoardTimer: Identifiable, Codable {
         self.penColorHex = penColorHex
         self.label = label
         self.calendarEventID = calendarEventID
+        self.isExplicitDate = isExplicitDate
     }
     
     init(from decoder: Decoder) throws {
@@ -62,6 +67,7 @@ struct BoardTimer: Identifiable, Codable {
         isDismissed = try c.decodeIfPresent(Bool.self, forKey: .isDismissed) ?? false
         label = try c.decodeIfPresent(String.self, forKey: .label)
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
+        isExplicitDate = try c.decodeIfPresent(Bool.self, forKey: .isExplicitDate) ?? false
         let x = try c.decodeIfPresent(CGFloat.self, forKey: .textRectX) ?? 0
         let y = try c.decodeIfPresent(CGFloat.self, forKey: .textRectY) ?? 0
         let w = try c.decodeIfPresent(CGFloat.self, forKey: .textRectW) ?? 0
@@ -82,6 +88,7 @@ struct BoardTimer: Identifiable, Codable {
         try c.encode(isDismissed, forKey: .isDismissed)
         try c.encodeIfPresent(label, forKey: .label)
         try c.encodeIfPresent(calendarEventID, forKey: .calendarEventID)
+        try c.encode(isExplicitDate, forKey: .isExplicitDate)
         try c.encode(textRect.origin.x, forKey: .textRectX)
         try c.encode(textRect.origin.y, forKey: .textRectY)
         try c.encode(textRect.size.width, forKey: .textRectW)

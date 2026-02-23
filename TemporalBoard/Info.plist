@@ -44,7 +44,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSCalendarsUsageDescription</key>
-	<string>TemporalBoard uses your calendar to create events from detected timers.</string>
-</dict>
+		<key>NSCalendarsUsageDescription</key>
+		<string>TemporalBoard uses your calendar to create events from detected timers.</string>
+		<key>NSRemindersUsageDescription</key>
+		<string>TemporalBoard can create reminders from handwritten future dates you confirm.</string>
+	</dict>
 </plist>

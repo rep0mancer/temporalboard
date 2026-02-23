@@ -8,14 +8,21 @@ struct TimeParseResult {
     let matchRange: Range<String.Index>
     /// Whether this is a countdown duration (e.g. "15 min") vs an absolute clock time.
     let isDuration: Bool
+    /// True when the expression contains an explicit calendar date (day/month[/year]).
+    let isExplicitDate: Bool
     /// Contextual label extracted from the surrounding text (e.g. "Call Mom" from
     /// "Call Mom in 15 min"). `nil` when the text contains only the time expression.
     let label: String?
     
-    init(targetDate: Date, matchRange: Range<String.Index>, isDuration: Bool, label: String? = nil) {
+    init(targetDate: Date,
+         matchRange: Range<String.Index>,
+         isDuration: Bool,
+         isExplicitDate: Bool = false,
+         label: String? = nil) {
         self.targetDate = targetDate
         self.matchRange = matchRange
         self.isDuration = isDuration
+        self.isExplicitDate = isExplicitDate
         self.label = label
     }
 }
@@ -71,6 +78,21 @@ class TimeParser {
         return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
     }()
     
+    private static let namedMonthDateRegex: NSRegularExpression = {
+        let monthNames = [
+            // English
+            "january", "jan", "february", "feb", "march", "mar", "april", "apr",
+            "may", "june", "jun", "july", "jul", "august", "aug", "september",
+            "sept", "sep", "october", "oct", "november", "nov", "december", "dec",
+            // German (common OCR variants)
+            "januar", "februar", "maerz", "marz", "märz", "april", "mai", "juni",
+            "juli", "august", "september", "oktober", "november", "dezember"
+        ].joined(separator: "|")
+        
+        let pattern = #"(?:^|\s)(\d{1,2})\.?\s*("# + monthNames + #")(?:\s+(\d{4}))?(?:\s+(\d{1,2})[:\.](\d{2}))?(?:\s|$)"#
+        return try! NSRegularExpression(pattern: pattern, options: .caseInsensitive)
+    }()
+    
     // MARK: - Public API
     
     /// Parse the first recognized time expression found anywhere in the text.
@@ -103,6 +125,9 @@ class TimeParser {
         // (e.g. "03.02" = 3 February) are parsed as dates.
         if rawResult == nil { rawResult = parseDateExpression(in: cleanText, now: now) }
         
+        // 3.5 Date with month name: "24. Februar 10:00", "24 Feb 10:00"
+        if rawResult == nil { rawResult = parseNamedMonthDate(in: cleanText, now: now) }
+        
         // 4. Absolute time with AM/PM: "2:30 PM", "11am"
         if rawResult == nil { rawResult = parseAbsoluteTimeAMPM(in: cleanText, now: now) }
         
@@ -124,6 +149,7 @@ class TimeParser {
             targetDate: result.targetDate,
             matchRange: result.matchRange,
             isDuration: result.isDuration,
+            isExplicitDate: result.isExplicitDate,
             label: label
         )
     }
@@ -423,7 +449,106 @@ class TimeParser {
         }
         
         let fullRange = dayRange.lowerBound..<endBound
-        return TimeParseResult(targetDate: targetDate, matchRange: fullRange, isDuration: false)
+        return TimeParseResult(
+            targetDate: targetDate,
+            matchRange: fullRange,
+            isDuration: false,
+            isExplicitDate: true
+        )
+    }
+    
+    // MARK: - Date Expression With Month Name ("24. Februar 10:00", "24 Feb 10:00")
+    
+    private static let monthNameToNumber: [String: Int] = [
+        // English
+        "january": 1, "jan": 1,
+        "february": 2, "feb": 2,
+        "march": 3, "mar": 3,
+        "april": 4, "apr": 4,
+        "may": 5,
+        "june": 6, "jun": 6,
+        "july": 7, "jul": 7,
+        "august": 8, "aug": 8,
+        "september": 9, "sep": 9, "sept": 9,
+        "october": 10, "oct": 10,
+        "november": 11, "nov": 11,
+        "december": 12, "dec": 12,
+        // German
+        "januar": 1,
+        "februar": 2,
+        "märz": 3, "maerz": 3, "marz": 3,
+        "mai": 5,
+        "juni": 6,
+        "juli": 7,
+        "oktober": 10,
+        "dezember": 12
+    ]
+    
+    private func parseNamedMonthDate(in text: String, now: Date) -> TimeParseResult? {
+        let regex = Self.namedMonthDateRegex
+        let nsRange = NSRange(text.startIndex..., in: text)
+        
+        guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else { return nil }
+        
+        guard let dayRange = Range(match.range(at: 1), in: text),
+              let monthNameRange = Range(match.range(at: 2), in: text),
+              let day = Int(text[dayRange]),
+              day >= 1 && day <= 31 else { return nil }
+        
+        let monthToken = text[monthNameRange].lowercased()
+        guard let month = Self.monthNameToNumber[monthToken] else { return nil }
+        
+        var components = calendar.dateComponents([.year], from: now)
+        var endBound = monthNameRange.upperBound
+        var hasExplicitYear = false
+        
+        // Optional year
+        if match.range(at: 3).location != NSNotFound,
+           let yearRange = Range(match.range(at: 3), in: text),
+           let year = Int(text[yearRange]),
+           year >= 1900, year <= 9999 {
+            components.year = year
+            hasExplicitYear = true
+            endBound = yearRange.upperBound
+        }
+        
+        components.day = day
+        components.month = month
+        
+        // Optional time
+        if match.range(at: 4).location != NSNotFound,
+           match.range(at: 5).location != NSNotFound,
+           let hourRange = Range(match.range(at: 4), in: text),
+           let minuteRange = Range(match.range(at: 5), in: text),
+           let hour = Int(text[hourRange]),
+           let minute = Int(text[minuteRange]),
+           hour >= 0, hour <= 23, minute >= 0, minute <= 59 {
+            components.hour = hour
+            components.minute = minute
+            endBound = minuteRange.upperBound
+        } else {
+            components.hour = 9
+            components.minute = 0
+        }
+        components.second = 0
+        
+        guard var targetDate = calendar.date(from: components) else { return nil }
+        
+        // If no explicit year was provided, roll past dates into next year.
+        if targetDate < now && !hasExplicitYear {
+            guard let year = components.year else { return nil }
+            components.year = year + 1
+            guard let nextYearDate = calendar.date(from: components) else { return nil }
+            targetDate = nextYearDate
+        }
+        
+        let fullRange = dayRange.lowerBound..<endBound
+        return TimeParseResult(
+            targetDate: targetDate,
+            matchRange: fullRange,
+            isDuration: false,
+            isExplicitDate: true
+        )
     }
     
     // MARK: - Contextual Label Extraction
@@ -435,9 +560,9 @@ class TimeParser {
     /// time-expression connectors, not content words.
     private static let connectorWords: Set<String> = [
         // English
-        "in", "at", "for", "by", "after", "before", "about", "around", "within",
+        "in", "at", "on", "for", "by", "after", "before", "about", "around", "within",
         // German
-        "um", "für", "nach", "bis", "gegen", "etwa",
+        "am", "um", "für", "nach", "bis", "gegen", "etwa",
         // French
         "à", "dans", "pour", "vers",
         // Italian / Spanish
@@ -508,4 +633,3 @@ class TimeParser {
         return combined.isEmpty ? nil : combined
     }
 }
-

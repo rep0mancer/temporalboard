@@ -3,24 +3,23 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0EBC58D7EB0BE22A102B2B18 /* CloudKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55152DDE567E5D5F1A3D5320 /* CloudKitManager.swift */; };
 		4C663EE671B3ECC5C8C7D2DD /* CalendarManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */; };
 		68C73213292ECAB08BEFC06D /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */; };
 		77DA55F72B9CA38E7BAD63B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */; };
 		78B8AFFBF9B2B6112457F28D /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 702252D7BA90FE0F10609149 /* Foundation.framework */; };
 		9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4901DDE4F4B41FB9E3D8298 /* models.swift */; };
 		A67E5AEB73BCD678FEC3040E /* TemporalBoardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */; };
+		E17766AA2F4A410300484BFD /* CloudKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17766A92F4A410300484BFD /* CloudKitManager.swift */; };
 		E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */; };
 		E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CalendarManager.swift; sourceTree = "<group>"; };
-		55152DDE567E5D5F1A3D5320 /* CloudKitManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CloudKitManager.swift; sourceTree = "<group>"; };
 		5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		702252D7BA90FE0F10609149 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
 		77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -29,6 +28,7 @@
 		A4901DDE4F4B41FB9E3D8298 /* models.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = models.swift; sourceTree = "<group>"; };
 		CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TimeParser.swift; sourceTree = "<group>"; };
 		D73A84F237088F2F5D021290 /* TemporalBoardApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemporalBoardApp.swift; sourceTree = "<group>"; };
+		E17766A92F4A410300484BFD /* CloudKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitManager.swift; sourceTree = "<group>"; };
 		F87A66EA09E8DD03BBF1E6C3 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -59,13 +59,12 @@
 				A2503F5D8A94C23F46EF2C18 /* CanvasView.swift */,
 				CE8847CDBA1439E9A51D45F4 /* TimeParser.swift */,
 				A4901DDE4F4B41FB9E3D8298 /* models.swift */,
-				55152DDE567E5D5F1A3D5320 /* CloudKitManager.swift */,
 				03A4DCE71A04BFB405CA36A0 /* CalendarManager.swift */,
+				E17766A92F4A410300484BFD /* CloudKitManager.swift */,
 				77677C9D5A9C03C5685CF1B2 /* OnboardingView.swift */,
 				5B7F1E9A4FBE0DBB42B80D72 /* Assets.xcassets */,
 				F87A66EA09E8DD03BBF1E6C3 /* Info.plist */,
 			);
-			name = TemporalBoard;
 			path = TemporalBoard;
 			sourceTree = "<group>";
 		};
@@ -120,8 +119,9 @@
 		F25BA7CC661E4A4E30BE0DD2 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
+				BuildIndependentTargetsInParallel = YES;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2620;
 			};
 			buildConfigurationList = A62134FFF672228A51E2D9DA /* Build configuration list for PBXProject "TemporalBoard" */;
 			compatibilityVersion = "Xcode 3.2";
@@ -132,8 +132,6 @@
 				Base,
 			);
 			mainGroup = 7C4605D119BBC1027A619473;
-			minimizedProjectReferenceProxies = 0;
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 82B3560B86E065376082DEBE /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -163,7 +161,7 @@
 				E48B7E0A0098C90A42C3DC8B /* CanvasView.swift in Sources */,
 				E21D6E824D29B1F1039F7069 /* TimeParser.swift in Sources */,
 				9BA2F24366188F6FBB1B3A13 /* models.swift in Sources */,
-				0EBC58D7EB0BE22A102B2B18 /* CloudKitManager.swift in Sources */,
+				E17766AA2F4A410300484BFD /* CloudKitManager.swift in Sources */,
 				4C663EE671B3ECC5C8C7D2DD /* CalendarManager.swift in Sources */,
 				68C73213292ECAB08BEFC06D /* OnboardingView.swift in Sources */,
 			);
@@ -206,9 +204,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = LLLJ84P67S;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -221,6 +222,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.9;
@@ -261,9 +263,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = LLLJ84P67S;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -283,6 +288,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.9;
@@ -296,11 +302,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = TemporalBoard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.temporalboard.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -315,11 +323,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = TemporalBoard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.temporalboard.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
