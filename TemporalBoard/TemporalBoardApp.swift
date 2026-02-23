@@ -6,10 +6,12 @@ import Combine
 @main
 struct TemporalBoardApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @AppStorage("appearanceMode") private var appearanceMode = 0
     
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(appearanceMode == 0 ? nil : (appearanceMode == 1 ? .light : .dark))
         }
     }
 }
